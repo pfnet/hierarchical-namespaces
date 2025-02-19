@@ -61,7 +61,7 @@ type TypeSyncer interface {
 // NamespaceListener has methods that get called whenever a namespace changes.
 type NamespaceListener interface {
 	// OnChangeNamespace is called whenever a namespace changes.
-	OnChangeNamespace(logr.Logger, *Namespace)
+	OnChangeNamespace(logr.Logger, *Namespace) error
 }
 
 func NewForest() *Forest {
@@ -95,7 +95,7 @@ func (f *Forest) Get(nm string) *Namespace {
 		name:          nm,
 		children:      namedNamespaces{},
 		sourceObjects: objects{},
-		quotas:        quotas{limits: limits{}, used: usage{}},
+		quotas:        make(map[string]*quotas),
 	}
 	f.namespaces[nm] = ns
 	return ns

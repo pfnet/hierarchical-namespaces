@@ -26,6 +26,11 @@ type HierarchicalResourceQuotaSpec struct {
 	// Hard is the set of desired hard limits for each named resource
 	// +optional
 	Hard corev1.ResourceList `json:"hard,omitempty"`
+
+	// ScopeSelector is also a collection of filters like Scopes that must match each object tracked by a quota
+	// but expressed using ScopeSelectorOperator in combination with possible values.
+	// +optional
+	ScopeSelector *corev1.ScopeSelector `json:"scopeSelector,omitempty"`
 }
 
 // HierarchicalResourceQuotaStatus defines the enforced hard limits and observed

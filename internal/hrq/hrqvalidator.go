@@ -73,6 +73,7 @@ func (v *HRQ) handle(ctx context.Context, log logr.Logger, inst *api.Hierarchica
 	rq.Namespace = inst.Namespace
 	rq.Name = createRQName()
 	rq.Spec.Hard = inst.Spec.Hard
+	rq.Spec.ScopeSelector = inst.Spec.ScopeSelector
 	log.V(1).Info("Validating resource types in the HRQ spec by writing them to a resource quota on apiserver", "limits", inst.Spec.Hard)
 	if err := v.server.validate(ctx, rq); err != nil {
 		return denyInvalidField(fieldInfo, ignoreRQErr(err.Error()))

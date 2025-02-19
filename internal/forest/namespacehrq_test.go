@@ -51,6 +51,8 @@ type wantError struct {
 	exceeded []exceeded
 }
 
+const quotaName = "hrq.hnc.x-k8s.io"
+
 // exceeded represents one exceeded resource with requested, used, limited quota.
 // Please note "exceeded" here means exceeding HRQ, not regular RQ. The quota
 // string must be  in the form that can be parsed by resource.MustParse, e.g.
@@ -163,7 +165,9 @@ func TestTryUseResources(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			forest := buildForest(t, tc.setup)
 			n := forest.Get(tc.req.ns)
-			gotError := n.TryUseResources(stringToResourceList(t, tc.req.use))
+			fmt.Println("Calling TryUseResources")
+			gotError := n.TryUseResources(stringToResourceList(t, tc.req.use), quotaName)
+			fmt.Println("Finished TryUseResources")
 			errMsg := checkError(gotError, tc.error)
 			if errMsg != "" {
 				t.Error(errMsg)
@@ -271,7 +275,7 @@ func TestCanUseResource(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := buildForest(t, tc.setup)
-			got := f.Get(tc.req.ns).canUseResources(stringToResourceList(t, tc.req.use))
+			got := f.Get(tc.req.ns).canUseResources(stringToResourceList(t, tc.req.use), quotaName)
 			errMsg := checkError(got, tc.want)
 			if errMsg != "" {
 				t.Error(errMsg)
@@ -347,7 +351,12 @@ func TestUseResource(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := buildForest(t, tc.setup)
 			n := f.Get(tc.req.ns)
-			n.UseResources(stringToResourceList(t, tc.req.use))
+
+			err := n.UseResources(quotaName, stringToResourceList(t, tc.req.use))
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
 			msg := checkUsages(t, n, tc.expected)
 			if msg != "" {
 				t.Error(msg)
@@ -470,7 +479,8 @@ func TestLimits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := buildForest(t, tc.setup)
 			n := f.Get(tc.ns)
-			got := n.Limits()
+			got := n.Limits(quotaName)
+
 			if result := utils.Equals(stringToResourceList(t, tc.want), got); !result {
 				t.Errorf("%s wantError: %v, got: %v", tc.name, tc.want, got)
 			}
@@ -491,11 +501,13 @@ func buildForest(t *testing.T, nss []testNS) *Forest {
 		if ns.limits == "" {
 			continue
 		}
-		cur.quotas = quotas{
-			limits: limits{ns.nm + "Hrq": stringToResourceList(t, ns.limits)},
-			used: usage{
-				local:   stringToResourceList(t, ns.local),
-				subtree: stringToResourceList(t, ns.local),
+		cur.quotas = map[string]*quotas{
+			quotaName: {
+				limits: limits{ns.nm + "Hrq": stringToResourceList(t, ns.limits)},
+				used: usage{
+					local:   stringToResourceList(t, ns.local),
+					subtree: stringToResourceList(t, ns.local),
+				},
 			},
 		}
 	}
@@ -504,7 +516,9 @@ func buildForest(t *testing.T, nss []testNS) *Forest {
 		cur := f.Get(ns.nm)
 		for _, anc := range strings.Fields(ns.ancs) {
 			next := f.Get(anc)
-			cur.SetParent(next)
+			if err := cur.SetParent(next); err != nil {
+				t.Fatalf("failed to set parent: %v", err)
+			}
 			cur = next
 		}
 	}
@@ -569,11 +583,20 @@ func errorMatches(err error, r wantError) bool {
 // otherwise, it returns true.
 func checkUsages(t *testing.T, n *Namespace, u usages) string {
 	t.Helper()
-	local := n.quotas.used.local
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		quota = &quotas{}
+	}
+
+	local := quota.used.local
 	if !utils.Equals(local, stringToResourceList(t, u[n.name])) {
+		localString := ""
+		for k, v := range local {
+			localString += fmt.Sprintf("%s %s ", k, v.String())
+		}
 		return fmt.Sprintf("want local resource usages: %v\n"+
 			"got local resource usages: %v\n",
-			u[n.name], local)
+			u[n.name], localString)
 	}
 
 	subtree := getSubtreeUsages(n)
@@ -591,11 +614,12 @@ func checkUsages(t *testing.T, n *Namespace, u usages) string {
 func getSubtreeUsages(ns *Namespace) parsedUsages {
 	var t parsedUsages
 	for ns != nil {
-		if len(ns.quotas.used.subtree) != 0 {
+		quota, ok := ns.quotas[quotaName]
+		if ok && len(quota.used.subtree) != 0 {
 			if t == nil {
 				t = parsedUsages{}
 			}
-			t[ns.Name()] = ns.quotas.used.subtree
+			t[ns.Name()] = quota.used.subtree
 		}
 		ns = ns.Parent()
 	}

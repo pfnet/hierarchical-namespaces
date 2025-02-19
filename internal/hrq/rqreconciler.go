@@ -2,11 +2,13 @@ package hrq
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -66,21 +68,37 @@ type ResourceQuotaReconciler struct {
 
 func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// The reconciler only reconciles ResourceQuota objects created by itself.
-	if req.NamespacedName.Name != ResourceQuotaSingleton {
+	if !strings.Contains(req.NamespacedName.Name, ResourceQuotaSingleton) {
+		// if req.NamespacedName.Name != ResourceQuotaSingleton {
 		return ctrl.Result{}, nil
 	}
 
 	ns := req.NamespacedName.Namespace
+	name := req.NamespacedName.Name
 	log := logutils.WithRID(r.Log).WithValues("trigger", req.NamespacedName)
 
-	inst, err := r.getSingleton(ctx, ns)
-	if err != nil {
+	inst, err := r.getSingleton(ctx, ns, name)
+	if apierrors.IsNotFound(err) {
+		inst = &v1.ResourceQuota{}
+		inst.ObjectMeta.Name = name
+		inst.ObjectMeta.Namespace = ns
+		if name != ResourceQuotaSingleton {
+			inst.Labels = map[string]string{
+				"hnc.x-k8s.io/single": "true",
+			}
+		}
+	} else if err != nil {
 		log.Error(err, "Couldn't read singleton")
 		return ctrl.Result{}, err
 	}
 
 	// Update our limits, and enqueue any related HRQs if our usage has changed.
-	updated := r.syncWithForest(log, inst)
+	updated, err := r.syncWithForest(log, inst)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Reconciling ResourceQuota", "name", fmt.Sprintf("%s/%s", inst.GetNamespace(), inst.GetName()), "limits", inst.Spec.Hard, "usages", inst.Status.Used)
 
 	// Delete the obsolete singleton and early exit if the new limits are empty.
 	if inst.Spec.Hard == nil {
@@ -97,18 +115,12 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// getSingleton returns the singleton if it exists, or creates a default one if it doesn't.
-func (r *ResourceQuotaReconciler) getSingleton(ctx context.Context,
-	ns string) (*v1.ResourceQuota, error) {
-	nnm := types.NamespacedName{Namespace: ns, Name: ResourceQuotaSingleton}
+// getSingleton returns the singleton if it exists.
+func (r *ResourceQuotaReconciler) getSingleton(ctx context.Context, ns, name string) (*v1.ResourceQuota, error) {
+	nnm := types.NamespacedName{Namespace: ns, Name: name}
 	inst := &v1.ResourceQuota{}
 	if err := r.Get(ctx, nnm, inst); err != nil {
-		if !errors.IsNotFound(err) {
-			return nil, err
-		}
-		// It doesn't exist - initialize it to a reasonable initial value.
-		inst.ObjectMeta.Name = ResourceQuotaSingleton
-		inst.ObjectMeta.Namespace = ns
+		return nil, err
 	}
 
 	return inst, nil
@@ -116,8 +128,7 @@ func (r *ResourceQuotaReconciler) getSingleton(ctx context.Context,
 
 // writeSingleton creates a singleton on the apiserver if it does not exist.
 // Otherwise, it updates existing singleton on the apiserver.
-func (r *ResourceQuotaReconciler) writeSingleton(ctx context.Context,
-	log logr.Logger, inst *v1.ResourceQuota) error {
+func (r *ResourceQuotaReconciler) writeSingleton(ctx context.Context, log logr.Logger, inst *v1.ResourceQuota) error {
 	if inst.CreationTimestamp.IsZero() {
 		// Set the cleanup label so the singleton can be deleted by selector later.
 		metadata.SetLabel(inst, api.HRQLabelCleanup, "true")
@@ -142,12 +153,17 @@ func (r *ResourceQuotaReconciler) writeSingleton(ctx context.Context,
 }
 
 // reportHRQEvent reports events on all ancestor HRQs if the error is not nil.
-func (r *ResourceQuotaReconciler) reportHRQEvent(ctx context.Context, log logr.Logger, inst *v1.ResourceQuota, err error) {
+func (r *ResourceQuotaReconciler) reportHRQEvent(ctx context.Context, log logr.Logger, inst *v1.ResourceQuota, err error) error {
 	if err == nil {
-		return
+		return nil
 	}
 
-	for _, nnm := range r.getAncestorHRQs(inst) {
+	nnms, err := r.getAncestorHRQs(inst)
+	if err != nil {
+		return err
+	}
+
+	for _, nnm := range nnms {
 		hrq := &api.HierarchicalResourceQuota{}
 		// Since the Event() func requires the full object as an input, we will
 		// have to get the HRQ from the apiserver here.
@@ -157,27 +173,37 @@ func (r *ResourceQuotaReconciler) reportHRQEvent(ctx context.Context, log logr.L
 			log.Error(err, "While trying to generate an event on the instance")
 			continue
 		}
-		msg := fmt.Sprintf("could not create/update lower-level ResourceQuota in namespace %q: %s", inst.Namespace, ignoreRQErr(err.Error()))
+		var errMsg string
+		if err != nil {
+			errMsg = ignoreRQErr(err.Error())
+		}
+		msg := fmt.Sprintf("could not create/update lower-level ResourceQuota %s: %s", nnm, errMsg)
 		r.eventRecorder.Event(hrq, "Warning", api.EventCannotWriteResourceQuota, msg)
 	}
+
+	return nil
 }
 
 // There may be race condition here since we previously release the hold that the
 // forest may have changed. However, it should be fine since the caller uses the
 // result to generate events on and will return an error for this reconciler to
 // retry. We will eventually get the right ancestor HRQs.
-func (r *ResourceQuotaReconciler) getAncestorHRQs(inst *v1.ResourceQuota) []types.NamespacedName {
+func (r *ResourceQuotaReconciler) getAncestorHRQs(inst *v1.ResourceQuota) ([]types.NamespacedName, error) {
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 
 	names := []types.NamespacedName{}
 	for _, nsnm := range r.Forest.Get(inst.Namespace).AncestryNames() {
-		for _, hrqnm := range r.Forest.Get(nsnm).HRQNames() {
+		hrqnms, err := r.Forest.Get(nsnm).HRQNames(ResourceQuotaSingleton)
+		if err != nil {
+			return nil, err
+		}
+		for _, hrqnm := range hrqnms {
 			names = append(names, types.NamespacedName{Namespace: nsnm, Name: hrqnm})
 		}
 	}
 
-	return names
+	return names, nil
 }
 
 // deleteSingleton deletes a singleton on the apiserver if it exists. Otherwise,
@@ -202,7 +228,7 @@ func (r *ResourceQuotaReconciler) deleteSingleton(ctx context.Context, log logr.
 //     and its ancestors.
 //   - Updates `hrq.used.local` of the current namespace and `hrq.used.subtree`
 //     of the current namespace and its ancestors based on `ResourceQuota.Status.Used`.
-func (r *ResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *v1.ResourceQuota) bool {
+func (r *ResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *v1.ResourceQuota) (bool, error) {
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 	ns := r.Forest.Get(inst.ObjectMeta.Namespace)
@@ -218,15 +244,30 @@ func (r *ResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *v1.Resou
 	// quota, the resource counts will be still be increased. This is because by the time the
 	// reconciler's running, the resources truly have been consumed so we just need to (accurately)
 	// reflect that we're over quota.
-	log.V(1).Info("RQ usages may have updated", "oldUsages", ns.GetLocalUsages(), "newUsages", inst.Status.Used)
-	ns.UseResources(inst.Status.Used)
+	usage, err := ns.GetLocalUsages(ResourceQuotaSingleton)
+	if errors.Is(err, forest.ErrQuotaNotFound) {
+		usage = v1.ResourceList{}
+	} else if err != nil {
+		return false, fmt.Errorf("while getting local usages: %w", err)
+	}
+
+	log.V(1).Info("RQ usages may have updated", "oldUsages", usage, "newUsages", inst.Status.Used)
+
+	if err := ns.UseResources(ResourceQuotaSingleton, inst.Status.Used); err != nil {
+		return false, fmt.Errorf("while using resources: %w", err)
+	}
+
 	for _, nsnm := range ns.AncestryNames() {
-		for _, qnm := range r.Forest.Get(nsnm).HRQNames() {
+		hrqnms, err := r.Forest.Get(nsnm).HRQNames(ResourceQuotaSingleton)
+		if err != nil {
+			return false, fmt.Errorf("while getting HRQ names: %w", err)
+		}
+		for _, qnm := range hrqnms {
 			r.HRQR.Enqueue(log, "subtree resource usages may have changed", nsnm, qnm)
 		}
 	}
 
-	return updated
+	return updated, nil
 }
 
 // syncResourceLimits updates `ResourceQuota.Spec.Hard` to be the union types from of `hrq.hard` of
@@ -237,25 +278,45 @@ func (r *ResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *v1.Resou
 func (r *ResourceQuotaReconciler) syncResourceLimits(ns *forest.Namespace, inst *v1.ResourceQuota) bool {
 	// Get the list of all resources that need to be restricted in this namespace, as well as the
 	// maximum possible limit for each resource.
-	l := ns.Limits()
+	l := ns.Limits(ResourceQuotaSingleton)
 
 	// Check to see if there's been any change and update if so.
 	if utils.Equals(l, inst.Spec.Hard) {
 		return false
 	}
 	inst.Spec.Hard = l
+	// inst.Spec.ScopeSelector = &v1.ScopeSelector{MatchExpressions: []v1.ScopedResourceSelectorRequirement{
+	// 	{
+	// 		ScopeName: "PriorityClass",
+	// 		Operator:  v1.ScopeSelectorOpIn,
+	// 		Values:    []string{"high", "medium"},
+	// 	},
+	// }}
 	return true
 }
 
 // OnChangeNamespace enqueues the singleton in a specific namespace to trigger the reconciliation of
 // the singleton for a given reason .  This occurs in a goroutine so the caller doesn't block; since
 // the reconciler is never garbage-collected, this is safe.
-func (r *ResourceQuotaReconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
+func (r *ResourceQuotaReconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) error {
 	nsnm := ns.Name()
 	go func() {
 		// The watch handler doesn't care about anything except the metadata.
 		inst := &v1.ResourceQuota{}
 		inst.ObjectMeta.Name = ResourceQuotaSingleton
+		inst.ObjectMeta.Namespace = nsnm
+		r.trigger <- event.GenericEvent{Object: inst}
+	}()
+
+	return nil
+}
+
+func (r *ResourceQuotaReconciler) OnChangeNamespace2(log logr.Logger, ns *forest.Namespace, name, parent string) {
+	nsnm := ns.Name()
+	go func() {
+		// The watch handler doesn't care about anything except the metadata.
+		inst := &v1.ResourceQuota{}
+		inst.ObjectMeta.Name = name
 		inst.ObjectMeta.Namespace = nsnm
 		r.trigger <- event.GenericEvent{Object: inst}
 	}()
@@ -272,14 +333,14 @@ func (r *ResourceQuotaReconciler) OnChangeNamespace(log logr.Logger, ns *forest.
 // ResourceQuotaReconciler. By contrast, if a namespace is *removed* as a descendant, we'll still
 // call the reconciler but it will have no effect (reconcilers can safely be called multiple times,
 // even if the object has been deleted).
-func (r *ResourceQuotaReconciler) EnqueueSubtree(log logr.Logger, nsnm string) {
+func (r *ResourceQuotaReconciler) EnqueueSubtree(log logr.Logger, nsnm, name, parent string) {
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 
 	nsnms := r.Forest.Get(nsnm).DescendantNames()
 	nsnms = append(nsnms, nsnm)
 	for _, nsnm := range nsnms {
-		r.OnChangeNamespace(log, r.Forest.Get(nsnm))
+		r.OnChangeNamespace2(log, r.Forest.Get(nsnm), name, parent)
 	}
 }
 

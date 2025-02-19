@@ -62,7 +62,7 @@ type Namespace struct {
 	Manager string
 
 	// quotas stores information about the hierarchical quotas and resource usage in this namespace
-	quotas quotas
+	quotas map[string]*quotas
 }
 
 // Name returns the name of the namespace, of "<none>" if the namespace is nil.

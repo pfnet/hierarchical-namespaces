@@ -78,7 +78,7 @@ func (r *ResourceQuotaStatus) handle(inst *v1.ResourceQuota) admission.Response 
 	defer r.Forest.Unlock()
 
 	ns := r.Forest.Get(inst.Namespace)
-	if err := ns.TryUseResources(inst.Status.Used); err != nil {
+	if err := ns.TryUseResources(inst.Status.Used, ResourceQuotaSingleton); err != nil {
 		return deny(metav1.StatusReasonForbidden, err.Error())
 	}
 

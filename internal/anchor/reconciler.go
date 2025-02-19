@@ -316,9 +316,9 @@ func (r *Reconciler) updateState(log logr.Logger, inst *api.SubnamespaceAnchor, 
 // OnChangeNamespace enqueues a subnamespace anchor for later reconciliation. This occurs in a
 // goroutine so the caller doesn't block; since the reconciler is never garbage-collected, this is
 // safe.
-func (r *Reconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
+func (r *Reconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) error {
 	if ns == nil || !ns.IsSub {
-		return
+		return nil
 	}
 	nm := ns.Name()
 	pnm := ns.Parent().Name()
@@ -330,6 +330,8 @@ func (r *Reconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
 		log.V(1).Info("Enqueuing for reconciliation", "affected", pnm+"/"+nm)
 		r.affected <- event.GenericEvent{Object: inst}
 	}()
+
+	return nil
 }
 
 func (r *Reconciler) getInstance(ctx context.Context, pnm, nm string) (*api.SubnamespaceAnchor, error) {

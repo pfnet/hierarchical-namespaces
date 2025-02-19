@@ -27,6 +27,7 @@ const (
 	fooHRQName = "foo-quota"
 	barHRQName = "bar-quota"
 	bazHRQName = "baz-quota"
+	quotaName  = "hrq.hnc.x-k8s.io"
 )
 
 var _ = Describe("HRQ reconciler tests", func() {
@@ -228,7 +229,7 @@ var _ = Describe("HRQ reconciler tests", func() {
 func forestOverrideSubtreeUsages(ns string, args ...string) {
 	TestForest.Lock()
 	defer TestForest.Unlock()
-	TestForest.Get(ns).TestOnlySetSubtreeUsage(argsToResourceList(0, args...))
+	TestForest.Get(ns).TestOnlySetSubtreeUsage(argsToResourceList(0, args...), quotaName)
 }
 
 func getHRQStatus(ctx context.Context, ns, nm string) func() v1.ResourceList {

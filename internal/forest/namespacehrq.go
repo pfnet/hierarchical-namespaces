@@ -11,6 +11,8 @@ import (
 	"sigs.k8s.io/hierarchical-namespaces/internal/hrq/utils"
 )
 
+var ErrQuotaNotFound = fmt.Errorf("quota not found")
+
 type quotas struct {
 	// limits stores the resource limits specified by the HRQs in this namespace
 	limits limits
@@ -73,36 +75,49 @@ type usage struct {
 // be incorrectly allowed. If the RQ reconciler runs first, we'll see that the usage is incorrectly
 // _increasing_ and it will be disallowed. However, I think the simplicity of not trying to prevent
 // this (hopefully very unlikely) corner case is more valuable than trying to catch it.
-func (n *Namespace) TryUseResources(rl v1.ResourceList) error {
-	if err := n.canUseResources(rl); err != nil {
+func (n *Namespace) TryUseResources(rl v1.ResourceList, quotaName string) error {
+	if err := n.canUseResources(rl, quotaName); err != nil {
 		// At least one of the proposed usage exceeds resource limits.
 		return err
 	}
 
 	// At this point we are confident that no proposed resource usage exceeds
 	// resource limits because the forest lock is held by the caller of this method.
-	n.UseResources(rl)
+	if err := n.UseResources(quotaName, rl); err != nil {
+		return err
+	}
+
 	return nil
 }
 
-// canUseResources checks if subtree resource usages exceed resource limits
-// in the namespace and its ancestors if proposed resource usages were consumed.
-// The method returns an error if any *changing* subtree resource usages exceed
-// the corresponding limits; otherwise, it returns nil. Note: if there's no
+// canUseResources checks if subtree resouexceed resource limits
+// in the namespace and its ancestors if pource usages were consumed.
+// The method returns an error if any *charee resource usages exceed
+// the corresponding limits; otherwise, itl. Note: if there's no
 // *change* on a subtree resource usage and it already exceeds limits, we will
 // ignore it because we don't want to block other valid resource usages.
-func (n *Namespace) canUseResources(u v1.ResourceList) error {
+func (n *Namespace) canUseResources(u v1.ResourceList, quotaName string) error {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		quota = &quotas{}
+	}
+
 	// For each resource, delta = proposed usage - current usage.
-	delta := utils.Subtract(u, n.quotas.used.local)
+	delta := utils.Subtract(u, quota.used.local)
 	// Only consider *increasing* deltas; see comments to TryUseResources for details.
 	increases := utils.OmitLTEZero(delta)
 
 	for _, nsnm := range n.AncestryNames() {
 		ns := n.forest.Get(nsnm)
+		nsQuota, ok := ns.quotas[quotaName]
+		if !ok {
+			continue
+		}
+
 		// Use AddIfExists (not Add) because we want to ignore any resources that aren't increasing when
 		// checking against the limits.
-		proposed := utils.AddIfExists(increases, ns.quotas.used.subtree)
-		allowed, nm, exceeded := checkLimits(ns.quotas.limits, proposed)
+		proposed := utils.AddIfExists(increases, nsQuota.used.subtree)
+		allowed, nm, exceeded := checkLimits(nsQuota.limits, proposed)
 		if allowed {
 			continue
 		}
@@ -114,8 +129,8 @@ func (n *Namespace) canUseResources(u v1.ResourceList) error {
 			rnm := er.String()
 			// Get the requested, used, limited quantity of the exceeded resource.
 			rq := increases[er]
-			uq := ns.quotas.used.subtree[er]
-			lq := ns.quotas.limits[nm][er]
+			uq := nsQuota.used.subtree[er]
+			lq := nsQuota.limits[nm][er]
 			msg += fmt.Sprintf(", requested: %s=%v, used: %s=%v, limited: %s=%v",
 				rnm, &rq, rnm, &uq, rnm, &lq)
 		}
@@ -141,18 +156,24 @@ func (n *Namespace) canUseResources(u v1.ResourceList) error {
 //   - Called by the SetParent to remove `local` usages of a namespace from
 //     the subtree usages of the previous ancestors of the namespace and add the
 //     usages to the new ancestors following a parent update
-func (n *Namespace) UseResources(newUsage v1.ResourceList) {
-	oldUsage := n.quotas.used.local
+func (n *Namespace) UseResources(quotaName string, newUsage v1.ResourceList) error {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		quota = &quotas{}
+		n.quotas[quotaName] = quota
+	}
+	oldUsage := quota.used.local
 
 	// We only store the usages we care about
-	newUsage = utils.FilterUnlimited(newUsage, n.Limits())
+	l := n.Limits(quotaName)
+	newUsage = utils.FilterUnlimited(newUsage, l)
 
 	// Early exit if there's no usages change. It's safe because the forest would
 	// remain unchanged and the caller would always enqueue all ancestor HRQs.
 	if utils.Equals(oldUsage, newUsage) {
-		return
+		return nil
 	}
-	n.quotas.used.local = newUsage
+	quota.used.local = newUsage
 
 	// Determine the delta in resource usage as this now needs to be applied to each ancestor.
 	delta := utils.Subtract(newUsage, oldUsage)
@@ -165,10 +186,18 @@ func (n *Namespace) UseResources(newUsage v1.ResourceList) {
 	for _, nsnm := range n.AncestryNames() {
 		ns := n.forest.Get(nsnm)
 
+		nsQuota, ok := ns.quotas[quotaName]
+		if !ok {
+			return fmt.Errorf("no quota found for %q", quotaName)
+		}
+
 		// Get the new subtree usage and remove no longer limited usages.
-		newSubUsg := utils.Add(delta, ns.quotas.used.subtree)
-		ns.quotas.used.subtree = utils.FilterUnlimited(newSubUsg, ns.Limits())
+		newSubUsg := utils.Add(delta, nsQuota.used.subtree)
+		l := ns.Limits(quotaName)
+		nsQuota.used.subtree = utils.FilterUnlimited(newSubUsg, l)
 	}
+
+	return nil
 }
 
 // checkLimits checks if resource usages exceed resource limits specified in
@@ -187,22 +216,32 @@ func checkLimits(l limits, u v1.ResourceList) (bool, string, []v1.ResourceName) 
 }
 
 // HRQNames returns the names of every HRQ object in this namespace
-func (n *Namespace) HRQNames() []string {
+func (n *Namespace) HRQNames(quotaName string) ([]string, error) {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		return nil, ErrQuotaNotFound
+	}
+
 	names := []string{}
-	for nm := range n.quotas.limits {
+	for nm := range quota.limits {
 		names = append(names, nm)
 	}
-	return names
+	return names, nil
 }
 
 // Limits returns limits limits specified in quotas.limits of the current namespace and
 // its ancestors. If there are more than one limits for a resource type, the
 // most strictest limit will be returned.
-func (n *Namespace) Limits() v1.ResourceList {
+func (n *Namespace) Limits(quotaName string) v1.ResourceList {
 	rs := v1.ResourceList{}
 	for _, nsnm := range n.AncestryNames() {
 		ns := n.forest.Get(nsnm)
-		for _, l := range ns.quotas.limits {
+		quota, ok := ns.quotas[quotaName]
+		if !ok {
+			continue
+		}
+
+		for _, l := range quota.limits {
 			rs = utils.Min(rs, l)
 		}
 	}
@@ -211,15 +250,23 @@ func (n *Namespace) Limits() v1.ResourceList {
 }
 
 // GetLocalUsages returns a copy of local resource usages.
-func (n *Namespace) GetLocalUsages() v1.ResourceList {
-	u := n.quotas.used.local.DeepCopy()
-	return u
+func (n *Namespace) GetLocalUsages(quotaName string) (v1.ResourceList, error) {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		return nil, ErrQuotaNotFound
+	}
+	u := quota.used.local.DeepCopy()
+	return u, nil
 }
 
 // GetSubtreeUsages returns a copy of subtree resource usages.
-func (n *Namespace) GetSubtreeUsages() v1.ResourceList {
-	u := n.quotas.used.subtree.DeepCopy()
-	return u
+func (n *Namespace) GetSubtreeUsages(quotaName string) (v1.ResourceList, error) {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		return nil, ErrQuotaNotFound
+	}
+	u := quota.used.subtree.DeepCopy()
+	return u, nil
 }
 
 // TestOnlySetSubtreeUsage overwrites the actual, calculated subtree usages and replaces them with
@@ -227,26 +274,43 @@ func (n *Namespace) GetSubtreeUsages() v1.ResourceList {
 // ability to recover from arbitrary garbage.
 //
 // The passed-in arg is used as-is, not copied. This is test code, so deal with it 😎
-func (n *Namespace) TestOnlySetSubtreeUsage(rl v1.ResourceList) {
-	n.quotas.used.subtree = rl
+func (n *Namespace) TestOnlySetSubtreeUsage(rl v1.ResourceList, quotaName string) error {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		return ErrQuotaNotFound
+	}
+	quota.used.subtree = rl
+	return nil
 }
 
 // RemoveLimits removes limits specified by the HierarchicalResourceQuota object
 // of the given name.
-func (n *Namespace) RemoveLimits(nm string) {
-	delete(n.quotas.limits, nm)
+func (n *Namespace) RemoveLimits(nm, quotaName string) error {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		return ErrQuotaNotFound
+	}
+	delete(quota.limits, nm)
+
+	return nil
 }
 
 // UpdateLimits updates in-memory limits of the HierarchicalResourceQuota
 // object of the given name. Returns true if there's a difference.
-func (n *Namespace) UpdateLimits(nm string, l v1.ResourceList) bool {
-	if n.quotas.limits == nil {
-		n.quotas.limits = limits{}
+func (n *Namespace) UpdateLimits(nm, quotaName string, l v1.ResourceList) bool {
+	quota, ok := n.quotas[quotaName]
+	if !ok {
+		quota = &quotas{}
+		n.quotas[quotaName] = quota
 	}
-	if utils.Equals(n.quotas.limits[nm], l) {
+
+	if quota.limits == nil {
+		quota.limits = limits{}
+	}
+	if utils.Equals(quota.limits[nm], l) {
 		return false
 	}
-	n.quotas.limits[nm] = l
+	quota.limits[nm] = l
 	return true
 }
 
@@ -257,11 +321,16 @@ func (n *Namespace) UpdateLimits(nm string, l v1.ResourceList) bool {
 // re-reconciled to show the corrected usages.
 //
 // The forest lock must be held when calling this function.
-func (f *Forest) RectifySubtreeUsages(log logr.Logger) []types.NamespacedName {
+func (f *Forest) RectifySubtreeUsages(log logr.Logger, quotaName string) ([]types.NamespacedName, error) {
 	// Recalculate all usages from scratch
 	usages := map[string]v1.ResourceList{}
 	for _, ns := range f.namespaces {
-		local := ns.quotas.used.local
+		quota, ok := ns.quotas[quotaName]
+		if !ok {
+			return nil, ErrQuotaNotFound
+		}
+
+		local := quota.used.local
 		// NB: AncestryNames includes the namespace itself
 		for _, anc := range ns.AncestryNames() {
 			if existing, ok := usages[anc]; ok {
@@ -275,8 +344,15 @@ func (f *Forest) RectifySubtreeUsages(log logr.Logger) []types.NamespacedName {
 	// Look for any out-of-date HRQ usages
 	updated := []types.NamespacedName{}
 	for nm, ns := range f.namespaces {
-		have := ns.quotas.used.subtree
-		actual := utils.FilterUnlimited(usages[nm], ns.Limits())
+		quota, ok := ns.quotas[quotaName]
+		if !ok {
+			return nil, ErrQuotaNotFound
+		}
+
+		have := quota.used.subtree
+		limit := ns.Limits(quotaName)
+
+		actual := utils.FilterUnlimited(usages[nm], limit)
 		if utils.Equals(have, actual) {
 			continue
 		}
@@ -286,8 +362,9 @@ func (f *Forest) RectifySubtreeUsages(log logr.Logger) []types.NamespacedName {
 		log.Error(err, "incrementally calculated usages are incorrect", "ns", nm, "incremental", have, "actual", actual)
 
 		// Update and return info so the reconciler can write back the corrected usages.
-		ns.quotas.used.subtree = actual
-		for hrq := range ns.quotas.limits {
+		quota.used.subtree = actual
+		ns.quotas[quotaName] = quota
+		for hrq := range quota.limits {
 			// These are the names of the actual objects
 			updated = append(updated, types.NamespacedName{
 				Namespace: nm,
@@ -296,5 +373,5 @@ func (f *Forest) RectifySubtreeUsages(log logr.Logger) []types.NamespacedName {
 		}
 	}
 
-	return updated
+	return updated, nil
 }

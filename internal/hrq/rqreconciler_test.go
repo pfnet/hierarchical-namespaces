@@ -204,7 +204,9 @@ func forestGetLocalUsages(ns string) func() v1.ResourceList {
 	TestForest.Lock()
 	defer TestForest.Unlock()
 	return func() v1.ResourceList {
-		return TestForest.Get(ns).GetLocalUsages()
+		usage, err := TestForest.Get(ns).GetLocalUsages(hrq.ResourceQuotaSingleton)
+		Expect(err).ShouldNot(HaveOccurred())
+		return usage
 	}
 }
 
@@ -212,14 +214,17 @@ func forestGetSubtreeUsages(ns string) func() v1.ResourceList {
 	TestForest.Lock()
 	defer TestForest.Unlock()
 	return func() v1.ResourceList {
-		return TestForest.Get(ns).GetSubtreeUsages()
+		usage, err := TestForest.Get(ns).GetSubtreeUsages(hrq.ResourceQuotaSingleton)
+		Expect(err).ShouldNot(HaveOccurred())
+		return usage
 	}
 }
 
 func forestUseResource(ns string, args ...string) {
 	TestForest.Lock()
 	defer TestForest.Unlock()
-	TestForest.Get(ns).UseResources(argsToResourceList(0, args...))
+	err := TestForest.Get(ns).UseResources(hrq.ResourceQuotaSingleton, argsToResourceList(0, args...))
+	Expect(err).ShouldNot(HaveOccurred())
 }
 
 // updateRQUsages updates the resource usages on the per-namespace RQ in this

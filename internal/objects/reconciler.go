@@ -106,7 +106,7 @@ type HNCConfigReconcilerType interface {
 // OnChangeNamespace is called whenever a namespace is changed (according to
 // HierarchyConfigReconciler). It enqueues all the current objects in the namespace and local copies
 // of the original objects in the ancestors.
-func (r *Reconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
+func (r *Reconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) error {
 	log = log.WithValues("gvk", r.GVK)
 	// Copy all information from the forest, as the lock will be released before the goroutines
 	// finish.
@@ -147,6 +147,8 @@ func (r *Reconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
 			r.Affected <- event.GenericEvent{Object: inst}
 		}
 	}()
+
+	return nil
 }
 
 // GetGVK provides GVK that is handled by this reconciler.
