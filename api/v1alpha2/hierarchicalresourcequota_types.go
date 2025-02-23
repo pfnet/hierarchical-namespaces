@@ -18,6 +18,11 @@ const (
 	// write ResourceQuota from an HRQ. Usually it means the HRQ has invalid
 	// resource quota types. The error message will point to the HRQ object.
 	EventCannotWriteResourceQuota string = "CannotWriteResourceQuota"
+
+	// The name of the ResourceQuota object created by the
+	// ResourceQuotaReconciler in a namespace.
+	// If HRQ does not have a ScopeSelector, it will be aggregated into a ResouraceQuota with this name.
+	ResourceQuotaSingletonName = "hrq." + MetaGroup
 )
 
 // HierarchicalResourceQuotaSpec defines the desired hard limits to enforce for

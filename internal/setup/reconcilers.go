@@ -137,7 +137,7 @@ func checkHRQDrift(f *forest.Forest, hrqr *hrq.HierarchicalResourceQuotaReconcil
 	defer f.Unlock()
 	found := false
 
-	subtreeUsages, err := f.RectifySubtreeUsages(hrqr.Log, hrq.ResourceQuotaSingleton)
+	subtreeUsages, err := f.RectifySubtreeUsages(hrqr.Log)
 	if err != nil {
 		return false, err
 	}
@@ -146,6 +146,19 @@ func checkHRQDrift(f *forest.Forest, hrqr *hrq.HierarchicalResourceQuotaReconcil
 		found = true
 		hrqr.Enqueue(hrqr.Log, "usage out-of-sync", nsnm.Namespace, nsnm.Name)
 	}
+
+	// If there is more than one quota, depending on the order in which they are evaluated,
+	// if one is allowed by the quota, the usage should be returned.
+	// Implementing this is tricky, so we will cheat by doing periodic synchronisation.
+	for ns, rqNames := range f.NamespaceHavingScopedHRQ() {
+		for _, rqName := range rqNames {
+			reason := "Periodic synchronization"
+			hrqr.Enqueue(hrqr.Log, reason, ns, rqName)
+		}
+	}
+
+	f.CleanupQuotas(hrqr.Log)
+
 	return found, nil
 }
 

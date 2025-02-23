@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -23,6 +24,10 @@ import (
 	"sigs.k8s.io/hierarchical-namespaces/internal/logutils"
 )
 
+const (
+	HRQSelectorAnnotation = "hrq.hnc.x-k8s.io/selector"
+)
+
 // RQEnqueuer enqueues ResourceQuota objects in a namespace and its descendants.
 // ResourceQuotaReconciler implements the interface so that it can be called by
 // the HierarchicalResourceQuotaReconciler when HierarchicalResourceQuota objects
@@ -31,7 +36,7 @@ type RQEnqueuer interface {
 	// EnqueueSubtree enqueues ResourceQuota objects in a namespace and its descendants. It's used by
 	// the HRQ reconciler when an HRQ has been updated and all the RQs that implement it need to be
 	// updated too.
-	EnqueueSubtree(log logr.Logger, nsnm, name, parent string)
+	EnqueueSubtree(log logr.Logger, nsnm, name string, deleted bool)
 }
 
 // HierarchicalResourceQuotaReconciler reconciles a HierarchicalResourceQuota object. It has three key
@@ -91,9 +96,9 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 		}
 	}
 
-	name := ResourceQuotaSingleton
-	if inst.Spec.ScopeSelector != nil && inst.Spec.ScopeSelector.MatchExpressions != nil {
-		name = fmt.Sprintf("%s-%s", ResourceQuotaSingleton, inst.Name)
+	rqName := api.ResourceQuotaSingletonName
+	if r.Forest.IsMarkedAsScopedHRQ(req.NamespacedName) {
+		rqName = utils.ScoepdRQName(inst.GetName())
 	}
 
 	// Enqueue ResourceQuota objects in the current namespace and its descendants
@@ -101,9 +106,9 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 	// includes the case when the object is deleted and all its hard limits are
 	// removed as a result.
 	if updatedForest {
-		log.Info("HRQ hard limits updated", "limits", inst.Spec.Hard, "name", fmt.Sprintf("%s/%s", inst.GetNamespace(), inst.GetName()))
+		log.Info("HRQ hard limits updated", "limits", inst.Spec.Hard, "name", fmt.Sprintf("%s/%s", inst.GetNamespace(), inst.GetName()), "rqName", rqName)
 		reason := fmt.Sprintf("Updated hard limits in subtree %q/%q", inst.GetNamespace(), inst.GetName())
-		r.RQR.EnqueueSubtree(log.WithValues("reason", reason), inst.GetNamespace(), name /* hrq.hnc.x-k8s.io-hierarchy-selector */, inst.Name /* hierarchy-selector */)
+		r.RQR.EnqueueSubtree(log.WithValues("reason", reason), inst.GetNamespace(), rqName, isDeleted(inst))
 	}
 
 	return ctrl.Result{}, nil
@@ -116,6 +121,17 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 
+	isScopedHRQ := inst.Spec.ScopeSelector != nil && len(inst.Spec.ScopeSelector.MatchExpressions) != 0
+
+	rqName := api.ResourceQuotaSingletonName
+	nn := types.NamespacedName{Name: inst.GetName(), Namespace: inst.GetNamespace()}
+	if isScopedHRQ {
+		r.Forest.MarkScopedRQ(nn)
+		rqName = utils.ScoepdRQName(inst.GetName())
+	} else if !r.Forest.IsMarkedAsScopedHRQ(nn) {
+		rqName = api.ResourceQuotaSingletonName
+	}
+
 	updatedInst := false
 	// Update HRQ limits if they are different in the spec and status.
 	if !utils.Equals(inst.Spec.Hard, inst.Status.Hard) {
@@ -125,13 +141,13 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	oldUsages := inst.Status.Used
 
 	// Update the forest if the HRQ limits are changed or first-time synced.
-	updatedForest, err := r.syncLimits(inst)
+	updatedForest, err := r.syncLimits(inst, rqName)
 	if err != nil {
 		return false, false, err
 	}
 
 	// Update HRQ usages if they are changed.
-	r.syncUsages(inst)
+	r.syncUsages(inst, rqName)
 	updatedInst = updatedInst || !utils.Equals(oldUsages, inst.Status.Used)
 
 	return updatedInst, updatedForest, nil
@@ -139,20 +155,21 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 
 // syncLimits syncs in-memory resource limits with the limits specified in the
 // spec. Returns true if there's a difference.
-func (r *HierarchicalResourceQuotaReconciler) syncLimits(inst *api.HierarchicalResourceQuota) (bool, error) {
+func (r *HierarchicalResourceQuotaReconciler) syncLimits(inst *api.HierarchicalResourceQuota, rqName forest.RQName) (bool, error) {
 	ns := r.Forest.Get(inst.GetNamespace())
 	if isDeleted(inst) {
-		if err := ns.RemoveLimits(inst.GetName(), ResourceQuotaSingleton); err != nil {
+		if err := ns.RemoveLimits(inst.GetName(), rqName); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
-	updated := ns.UpdateLimits(inst.GetName(), ResourceQuotaSingleton, inst.Spec.Hard)
+	updated := ns.UpdateLimits(inst.GetName(), rqName, inst.Spec.Hard)
+
 	return updated, nil
 }
 
 // syncUsages updates resource usage status based on in-memory resource usages.
-func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalResourceQuota) error {
+func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalResourceQuota, quotaName string) error {
 	// If the object is deleted, there is no need to update its usage status.
 	if isDeleted(inst) {
 		return nil
@@ -161,7 +178,7 @@ func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalR
 
 	// Filter the usages to only include the resource types being limited by this HRQ and write those
 	// usages back to the HRQ status.
-	usage, err := ns.GetSubtreeUsages(ResourceQuotaSingleton)
+	usage, err := ns.GetSubtreeUsages(quotaName)
 	if err != nil {
 		return err
 	}
@@ -201,13 +218,10 @@ func isDeleted(inst *api.HierarchicalResourceQuota) bool {
 }
 
 // allSubtreeHRQs returns a slice of all HRQ objects in a subtree
-func (r *HierarchicalResourceQuotaReconciler) allSubtreeHRQs(ns *forest.Namespace) ([]api.HierarchicalResourceQuota, error) {
+func (r *HierarchicalResourceQuotaReconciler) allSubtreeHRQs(ns *forest.Namespace) []api.HierarchicalResourceQuota {
 	insts := []api.HierarchicalResourceQuota{}
 	for _, nsnm := range ns.AncestryNames() {
-		hrqnms, err := r.Forest.Get(nsnm).HRQNames(ResourceQuotaSingleton)
-		if err != nil {
-			return nil, err
-		}
+		hrqnms := r.Forest.Get(nsnm).HRQNames()
 		for _, hrqnm := range hrqnms {
 			inst := api.HierarchicalResourceQuota{}
 			inst.ObjectMeta.Name = hrqnm
@@ -216,7 +230,7 @@ func (r *HierarchicalResourceQuotaReconciler) allSubtreeHRQs(ns *forest.Namespac
 			insts = append(insts, inst)
 		}
 	}
-	return insts, nil
+	return insts
 }
 
 // OnChangeNamespace enqueues all HRQ objects in the subtree for later reconciliation.
@@ -224,19 +238,14 @@ func (r *HierarchicalResourceQuotaReconciler) allSubtreeHRQs(ns *forest.Namespac
 // change in the tree hierarchy which affects the subtree usage of the HRQ objects.
 // This occurs in a goroutine so the caller doesn't block; since the
 // reconciler is never garbage-collected, this is safe.
-func (r *HierarchicalResourceQuotaReconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) error {
-	insts, err := r.allSubtreeHRQs(ns)
-	if err != nil {
-		return err
-	}
+func (r *HierarchicalResourceQuotaReconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
+	insts := r.allSubtreeHRQs(ns)
 
 	go func() {
 		for _, inst := range insts {
 			r.trigger <- event.GenericEvent{Object: &inst}
 		}
 	}()
-
-	return nil
 }
 
 // Enqueue enqueues a specific HierarchicalResourceQuota object to trigger the reconciliation of the

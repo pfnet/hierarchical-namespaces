@@ -51,7 +51,7 @@ type wantError struct {
 	exceeded []exceeded
 }
 
-const quotaName = "hrq.hnc.x-k8s.io"
+const rqName = "hrq.hnc.x-k8s.io"
 
 // exceeded represents one exceeded resource with requested, used, limited quota.
 // Please note "exceeded" here means exceeding HRQ, not regular RQ. The quota
@@ -165,9 +165,12 @@ func TestTryUseResources(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			forest := buildForest(t, tc.setup)
 			n := forest.Get(tc.req.ns)
-			fmt.Println("Calling TryUseResources")
-			gotError := n.TryUseResources(stringToResourceList(t, tc.req.use), quotaName)
-			fmt.Println("Finished TryUseResources")
+
+			if _, ok := n.GetQuota(rqName); !ok {
+				n.SetQuota(rqName)
+			}
+
+			gotError := n.TryUseResources(stringToResourceList(t, tc.req.use), rqName)
 			errMsg := checkError(gotError, tc.error)
 			if errMsg != "" {
 				t.Error(errMsg)
@@ -275,7 +278,7 @@ func TestCanUseResource(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f := buildForest(t, tc.setup)
-			got := f.Get(tc.req.ns).canUseResources(stringToResourceList(t, tc.req.use), quotaName)
+			got := f.Get(tc.req.ns).canUseResources(stringToResourceList(t, tc.req.use), rqName)
 			errMsg := checkError(got, tc.want)
 			if errMsg != "" {
 				t.Error(errMsg)
@@ -352,7 +355,11 @@ func TestUseResource(t *testing.T) {
 			f := buildForest(t, tc.setup)
 			n := f.Get(tc.req.ns)
 
-			err := n.UseResources(quotaName, stringToResourceList(t, tc.req.use))
+			if _, ok := n.GetQuota(rqName); !ok {
+				n.SetQuota(rqName)
+			}
+
+			err := n.UseResources(rqName, stringToResourceList(t, tc.req.use))
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -479,7 +486,7 @@ func TestLimits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := buildForest(t, tc.setup)
 			n := f.Get(tc.ns)
-			got := n.Limits(quotaName)
+			got := n.Limits(rqName)
 
 			if result := utils.Equals(stringToResourceList(t, tc.want), got); !result {
 				t.Errorf("%s wantError: %v, got: %v", tc.name, tc.want, got)
@@ -502,7 +509,7 @@ func buildForest(t *testing.T, nss []testNS) *Forest {
 			continue
 		}
 		cur.quotas = map[string]*quotas{
-			quotaName: {
+			rqName: {
 				limits: limits{ns.nm + "Hrq": stringToResourceList(t, ns.limits)},
 				used: usage{
 					local:   stringToResourceList(t, ns.local),
@@ -583,9 +590,9 @@ func errorMatches(err error, r wantError) bool {
 // otherwise, it returns true.
 func checkUsages(t *testing.T, n *Namespace, u usages) string {
 	t.Helper()
-	quota, ok := n.quotas[quotaName]
+	quota, ok := n.GetQuota(rqName)
 	if !ok {
-		quota = &quotas{}
+		return fmt.Sprintf("quota not found in namespace %s\n", n.Name())
 	}
 
 	local := quota.used.local
@@ -614,7 +621,7 @@ func checkUsages(t *testing.T, n *Namespace, u usages) string {
 func getSubtreeUsages(ns *Namespace) parsedUsages {
 	var t parsedUsages
 	for ns != nil {
-		quota, ok := ns.quotas[quotaName]
+		quota, ok := ns.GetQuota(rqName)
 		if ok && len(quota.used.subtree) != 0 {
 			if t == nil {
 				t = parsedUsages{}

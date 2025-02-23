@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
-	"sigs.k8s.io/hierarchical-namespaces/internal/hrq"
+	"sigs.k8s.io/hierarchical-namespaces/internal/forest"
 	"sigs.k8s.io/hierarchical-namespaces/internal/hrq/utils"
 	. "sigs.k8s.io/hierarchical-namespaces/internal/integtest"
 	"sigs.k8s.io/hierarchical-namespaces/internal/metadata"
@@ -31,6 +31,16 @@ var _ = Describe("RQ reconciler tests", func() {
 		barName string
 		bazName string
 	)
+
+	highPrioritySelector := v1.ScopeSelector{
+		MatchExpressions: []v1.ScopedResourceSelectorRequirement{
+			{
+				Operator:  v1.ScopeSelectorOpIn,
+				ScopeName: "PriorityClass",
+				Values:    []string{"high"},
+			},
+		},
+	}
 
 	BeforeEach(func() {
 		fooName = CreateNS(ctx, "foo")
@@ -54,81 +64,122 @@ var _ = Describe("RQ reconciler tests", func() {
 	})
 
 	It("should set hard limits for each namespace", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100", "cpu", "50")
-		setHRQ(ctx, bazHRQName, bazName, "pods", "1")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
+		setHRQ(ctx, bazHRQName, bazName, nil, "pods", "1")
+		hrqWithSelectorName := "hrq-with-selector"
+		rqName := fmt.Sprintf("%s-%s", api.ResourceQuotaSingletonName, hrqWithSelectorName)
+		setHRQ(ctx, hrqWithSelectorName, fooName, &highPrioritySelector, "cpu", "4", "pods", "2")
 
-		Eventually(getRQSpec(ctx, fooName)).Should(equalRL("secrets", "6", "pods", "3"))
+		Eventually(getRQHard(ctx, fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "3"))
 		// Even though bar allows 100 secrets, the secret limit in the ResourceQuota object in bar
 		// should be 6, which is the strictest limit among bar and its ancestor (i.e., foo).
-		Eventually(getRQSpec(ctx, barName)).Should(equalRL("secrets", "6", "pods", "3", "cpu", "50"))
-		Eventually(getRQSpec(ctx, bazName)).Should(equalRL("secrets", "6", "pods", "1"))
+		Eventually(getRQHard(ctx, barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "3", "cpu", "50"))
+		Eventually(getRQHard(ctx, bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "1"))
+
+		Eventually(getRQHard(ctx, fooName, rqName)).Should(equalRL("cpu", "4", "pods", "2"))
+		Eventually(getRQHard(ctx, barName, rqName)).Should(equalRL("cpu", "4", "pods", "2"))
+		Eventually(getRQHard(ctx, bazName, rqName)).Should(equalRL("cpu", "4", "pods", "2"))
+		Eventually(getRQScoep(ctx, bazName, rqName)).Should(Equal(&highPrioritySelector))
 	})
 
 	It("should update in-memory resource usages after ResourceQuota status changes", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100", "cpu", "50")
-		setHRQ(ctx, bazHRQName, bazName, "pods", "1")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
+		setHRQ(ctx, bazHRQName, bazName, nil, "pods", "1")
+
+		hrqWithSelectorName := "hrq-with-selector"
+		rqName := fmt.Sprintf("%s-%s", api.ResourceQuotaSingletonName, hrqWithSelectorName)
+		setHRQ(ctx, hrqWithSelectorName, fooName, &highPrioritySelector, "cpu", "6", "pods", "3")
+		setHRQ(ctx, hrqWithSelectorName, barName, &highPrioritySelector, "cpu", "100", "pods", "50")
+		setHRQ(ctx, hrqWithSelectorName, bazName, &highPrioritySelector, "pods", "1")
+
 		// Simulate the K8s ResourceQuota controller to update usages. bar and baz
 		// are foo's children, so they have "secrets" and "pods" in their RQ singleton.
-		updateRQUsage(ctx, fooName, "secrets", "0", "pods", "0")
-		updateRQUsage(ctx, barName, "secrets", "0", "cpu", "0", "pods", "0")
-		updateRQUsage(ctx, bazName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, fooName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "0", "cpu", "0", "pods", "0")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
+
+		updateRQUsage(ctx, fooName, rqName, "cpu", "0", "pods", "0")
+		updateRQUsage(ctx, barName, rqName, "cpu", "0", "pods", "0")
+		updateRQUsage(ctx, bazName, rqName, "cpu", "0", "pods", "0")
 
 		// Increase secret counts from 0 to 10 in baz. Note that the number of secrets is theoretically
 		// limited to 6 (since baz is a child of foo), but the webhooks aren't actually running in this
 		// test so we can exceed those limits.
-		updateRQUsage(ctx, bazName, "secrets", "10")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "10")
+		updateRQUsage(ctx, bazName, rqName, "pods", "10")
 
 		// Check in-memory resource usages for baz (should have increased).
-		Eventually(forestGetLocalUsages(bazName)).Should(equalRL("secrets", "10", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(bazName)).Should(equalRL("secrets", "10", "pods", "0"))
+		Eventually(forestGetLocalUsages(bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "10", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "10", "pods", "0"))
+		// TODO:
+		Eventually(forestGetLocalUsages(bazName, rqName)).Should(equalRL("cpu", "0", "pods", "10"))
+		Eventually(forestGetSubtreeUsages(bazName, rqName)).Should(equalRL("cpu", "0", "pods", "10"))
 
 		// Check in-memory resource usages for bar (unaffected by what's going on in baz).
-		Eventually(forestGetLocalUsages(barName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(barName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(barName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(barName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
 
 		// Check in-memory resource usages for foo (local usage is unaffected;
 		// subtree usage has gone up since baz is a child).
-		Eventually(forestGetLocalUsages(fooName)).Should(equalRL("secrets", "0", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(fooName)).Should(equalRL("secrets", "10", "pods", "0"))
+		Eventually(forestGetLocalUsages(fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "10", "pods", "0"))
+		Eventually(forestGetLocalUsages(fooName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(fooName, rqName)).Should(equalRL("cpu", "0", "pods", "10"))
 
 		// Decrease secret counts from 10 to 0 in baz.
-		updateRQUsage(ctx, bazName, "secrets", "0")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "0")
+		// Decrease pods counts from 10 to 0 in baz.
+		updateRQUsage(ctx, bazName, rqName, "pods", "0")
 
 		// Check in-memory resource usages for baz.
-		Eventually(forestGetLocalUsages(bazName)).Should(equalRL("secrets", "0", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(bazName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(bazName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(bazName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
 
 		// Check in-memory resource usages for bar.
-		Eventually(forestGetLocalUsages(barName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(barName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "cpu", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(barName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(barName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
 
 		// Check in-memory resource usages for foo.
-		Eventually(forestGetLocalUsages(fooName)).Should(equalRL("secrets", "0", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(fooName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(fooName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(fooName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
 
 		// Additionally testing not limited resource consumption: increase cpu usage
 		// in baz, which is not limited in foo or baz itself. Make sure the in-memory
 		// subtree usage for foo and the local and subtree usage for baz are zero.
-		updateRQUsage(ctx, bazName, "cpu", "1")
-		Eventually(forestGetLocalUsages(fooName)).Should(equalRL("secrets", "0", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(fooName)).Should(equalRL("secrets", "0", "pods", "0"))
-		Eventually(forestGetLocalUsages(bazName)).Should(equalRL("secrets", "0", "pods", "0"))
-		Eventually(forestGetSubtreeUsages(bazName)).Should(equalRL("secrets", "0", "pods", "0"))
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "cpu", "1")
+		Eventually(forestGetLocalUsages(fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "0", "pods", "0"))
+
+		updateRQUsage(ctx, bazName, rqName, "secrets", "1")
+		Eventually(forestGetLocalUsages(fooName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(fooName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetLocalUsages(bazName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(bazName, rqName)).Should(equalRL("cpu", "0", "pods", "0"))
 	})
 
 	// This is simulating the RQ status change happened in the RQStatusValidator,
 	// where the forest is updated while the HRQs are not yet enqueued.
 	It("should enqueue HRQs even if the forest usages (updated by RQStatusValidator) is the same as the RQ usages", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100", "cpu", "50")
-		setHRQ(ctx, bazHRQName, bazName, "pods", "1")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
+		setHRQ(ctx, bazHRQName, bazName, nil, "pods", "1")
 		// Simulate the K8s ResourceQuota controller to update usages. bar and baz
 		// are foo's children, so they have "secrets" and "pods" in their RQ singleton.
-		updateRQUsage(ctx, fooName, "secrets", "0", "pods", "0")
-		updateRQUsage(ctx, barName, "secrets", "0", "cpu", "0", "pods", "0")
-		updateRQUsage(ctx, bazName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, fooName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "0", "cpu", "0", "pods", "0")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
 		// Make sure the above RQ reconciliations are finished before proceeding.
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "0", "pods", "0"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "0", "cpu", "0"))
@@ -139,20 +190,20 @@ var _ = Describe("RQ reconciler tests", func() {
 		// enqueues HRQs to update usages, let's check the foo HRQ before the RQ
 		// update to make sure it's not updated before the RQ reconciliation.
 		forestUseResource(bazName, "secrets", "10", "pods", "0")
-		Eventually(forestGetSubtreeUsages(fooName)).Should(equalRL("secrets", "10", "pods", "0"))
+		Eventually(forestGetSubtreeUsages(fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "10", "pods", "0"))
 		// Use Consistently here because the HRQs should not be enqueued to update
 		// usages yet.
 		Consistently(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "0", "pods", "0"))
 		// Simulate the K8s ResourceQuota admission controller to update usages
 		// after validating the request.
-		updateRQUsage(ctx, bazName, "secrets", "10")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "10")
 
 		// Verify the HRQ is enqueued to update the usage.
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "10", "pods", "0"))
 	})
 
 	It("should set cleanup label on the singletons", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
 
 		Eventually(rqSingletonHasCleanupLabel(ctx, fooName)).Should(Equal(true))
 		Eventually(rqSingletonHasCleanupLabel(ctx, barName)).Should(Equal(true))
@@ -162,7 +213,7 @@ var _ = Describe("RQ reconciler tests", func() {
 	It("should add non-propagate exception annotation to all the RQ singletons", func() {
 		// Since foo is the ancestor of both bar and baz, we just need to create one
 		// hrq in the foo namespace for this test.
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
 
 		// All RQ singletons in foo, bar, baz should have the non-propagate annotation.
 		Eventually(rqSingletonHasNonPropagateAnnotation(ctx, fooName)).Should(Equal(true))
@@ -200,21 +251,21 @@ func (r *rlMatcher) NegatedFailureMessage(_ interface{}) string {
 	return fmt.Sprintf("Did not want: %+v", r.want)
 }
 
-func forestGetLocalUsages(ns string) func() v1.ResourceList {
+func forestGetLocalUsages(ns string, rqName forest.RQName) func() v1.ResourceList {
 	TestForest.Lock()
 	defer TestForest.Unlock()
 	return func() v1.ResourceList {
-		usage, err := TestForest.Get(ns).GetLocalUsages(hrq.ResourceQuotaSingleton)
+		usage, err := TestForest.Get(ns).GetLocalUsages(rqName)
 		Expect(err).ShouldNot(HaveOccurred())
 		return usage
 	}
 }
 
-func forestGetSubtreeUsages(ns string) func() v1.ResourceList {
+func forestGetSubtreeUsages(ns string, rqName forest.RQName) func() v1.ResourceList {
 	TestForest.Lock()
 	defer TestForest.Unlock()
 	return func() v1.ResourceList {
-		usage, err := TestForest.Get(ns).GetSubtreeUsages(hrq.ResourceQuotaSingleton)
+		usage, err := TestForest.Get(ns).GetSubtreeUsages(rqName)
 		Expect(err).ShouldNot(HaveOccurred())
 		return usage
 	}
@@ -223,7 +274,7 @@ func forestGetSubtreeUsages(ns string) func() v1.ResourceList {
 func forestUseResource(ns string, args ...string) {
 	TestForest.Lock()
 	defer TestForest.Unlock()
-	err := TestForest.Get(ns).UseResources(hrq.ResourceQuotaSingleton, argsToResourceList(0, args...))
+	err := TestForest.Get(ns).UseResources(api.ResourceQuotaSingletonName, argsToResourceList(0, args...))
 	Expect(err).ShouldNot(HaveOccurred())
 }
 
@@ -233,8 +284,8 @@ func forestUseResource(ns string, args ...string) {
 // resource is limited in the RQ but not mentioned when calling this function,
 // it is left unchanged (i.e. this is a merge operation at the overall status
 // level, not a replacement of the entire status).
-func updateRQUsage(ctx context.Context, ns string, args ...string) {
-	nsn := types.NamespacedName{Namespace: ns, Name: hrq.ResourceQuotaSingleton}
+func updateRQUsage(ctx context.Context, ns, rqName string, args ...string) {
+	nsn := types.NamespacedName{Namespace: ns, Name: rqName}
 	EventuallyWithOffset(1, func() error {
 		rq := &v1.ResourceQuota{}
 		if err := K8sClient.Get(ctx, nsn, rq); err != nil {
@@ -252,7 +303,40 @@ func updateRQUsage(ctx context.Context, ns string, args ...string) {
 
 // setHRQ creates or replaces an existing HRQ with the given resource limits. Any existing spec is
 // replaced by this function.
-func setHRQ(ctx context.Context, nm, ns string, args ...string) {
+// func setHRQ(ctx context.Context, nm, ns string, args ...string) {
+// 	nsn := types.NamespacedName{Namespace: ns, Name: nm}
+// 	hrq := &api.HierarchicalResourceQuota{
+// 		ObjectMeta: metav1.ObjectMeta{
+// 			Name:      nm,
+// 			Namespace: ns,
+// 		},
+// 	}
+// 	EventuallyWithOffset(1, func() error {
+// 		err := K8sClient.Get(ctx, nsn, hrq)
+// 		if errors.IsNotFound(err) {
+// 			return nil
+// 		}
+// 		return err
+// 	}).Should(Succeed(), "While checking if HRQ %s/%s already exists", ns, nm)
+//
+// 	hrq.Spec.Hard = argsToResourceList(1, args...)
+//
+// 	EventuallyWithOffset(1, func() error {
+// 		if hrq.CreationTimestamp.IsZero() {
+// 			err := K8sClient.Create(ctx, hrq)
+// 			if err == nil {
+// 				createdHRQs = append(createdHRQs, hrq)
+// 			}
+// 			return err
+// 		} else {
+// 			return K8sClient.Update(ctx, hrq)
+// 		}
+// 	}).Should(Succeed(), "While updating HRQ; %+v", hrq)
+// }
+
+// setHRQ creates or replaces an existing HRQ with the given resource limits. Any existing spec is
+// replaced by this function.
+func setHRQ(ctx context.Context, nm, ns string, scopeSelector *v1.ScopeSelector, args ...string) {
 	nsn := types.NamespacedName{Namespace: ns, Name: nm}
 	hrq := &api.HierarchicalResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
@@ -269,6 +353,7 @@ func setHRQ(ctx context.Context, nm, ns string, args ...string) {
 	}).Should(Succeed(), "While checking if HRQ %s/%s already exists", ns, nm)
 
 	hrq.Spec.Hard = argsToResourceList(1, args...)
+	hrq.Spec.ScopeSelector = scopeSelector
 
 	EventuallyWithOffset(1, func() error {
 		if hrq.CreationTimestamp.IsZero() {
@@ -311,7 +396,7 @@ func cleanupHRQObjects(ctx context.Context) {
 
 func rqSingletonHasCleanupLabel(ctx context.Context, ns string) func() bool {
 	return func() bool {
-		nsn := types.NamespacedName{Namespace: ns, Name: hrq.ResourceQuotaSingleton}
+		nsn := types.NamespacedName{Namespace: ns, Name: api.ResourceQuotaSingletonName}
 		inst := &v1.ResourceQuota{}
 		if err := K8sClient.Get(ctx, nsn, inst); err != nil {
 			return false
@@ -325,7 +410,7 @@ func rqSingletonHasCleanupLabel(ctx context.Context, ns string) func() bool {
 
 func rqSingletonHasNonPropagateAnnotation(ctx context.Context, ns string) func() bool {
 	return func() bool {
-		nsn := types.NamespacedName{Namespace: ns, Name: hrq.ResourceQuotaSingleton}
+		nsn := types.NamespacedName{Namespace: ns, Name: api.ResourceQuotaSingletonName}
 		inst := &v1.ResourceQuota{}
 		if err := K8sClient.Get(ctx, nsn, inst); err != nil {
 			return false

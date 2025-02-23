@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 )
@@ -30,6 +31,8 @@ type Forest struct {
 	// We can also move the lock out of the forest and pass it to all reconcilers that need the lock.
 	// In that way, we don't need to put the list in the forest.
 	types []TypeSyncer
+
+	scopedHRQMark map[types.NamespacedName]struct{}
 
 	// nsListeners is a list of listeners
 	listeners []NamespaceListener
@@ -61,13 +64,14 @@ type TypeSyncer interface {
 // NamespaceListener has methods that get called whenever a namespace changes.
 type NamespaceListener interface {
 	// OnChangeNamespace is called whenever a namespace changes.
-	OnChangeNamespace(logr.Logger, *Namespace) error
+	OnChangeNamespace(logr.Logger, *Namespace)
 }
 
 func NewForest() *Forest {
 	return &Forest{
-		namespaces: namedNamespaces{},
-		types:      []TypeSyncer{},
+		namespaces:    namedNamespaces{},
+		types:         []TypeSyncer{},
+		scopedHRQMark: make(map[types.NamespacedName]struct{}),
 	}
 }
 
@@ -95,7 +99,7 @@ func (f *Forest) Get(nm string) *Namespace {
 		name:          nm,
 		children:      namedNamespaces{},
 		sourceObjects: objects{},
-		quotas:        make(map[string]*quotas),
+		quotas:        make(map[RQName]*quotas),
 	}
 	f.namespaces[nm] = ns
 	return ns
@@ -161,6 +165,15 @@ func (f *Forest) GetTypeSyncers() []TypeSyncer {
 
 func (f *Forest) AddListener(l NamespaceListener) {
 	f.listeners = append(f.listeners, l)
+}
+
+func (f *Forest) IsMarkedAsScopedHRQ(nn types.NamespacedName) bool {
+	_, ok := f.scopedHRQMark[nn]
+	return ok
+}
+
+func (f *Forest) MarkScopedRQ(nn types.NamespacedName) {
+	f.scopedHRQMark[nn] = struct{}{}
 }
 
 func (f *Forest) OnChangeNamespace(log logr.Logger, ns *Namespace) {
