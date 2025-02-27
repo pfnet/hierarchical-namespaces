@@ -39,14 +39,14 @@ func (ns *Namespace) IsAncestor(other *Namespace) bool {
 func (ns *Namespace) SetParent(p *Namespace) error {
 	// Remove usage from old subtree.
 	nsUsages := make(map[string]v1.ResourceList)
-	for quotaName, quota := range ns.quotas {
+	for rqName, quota := range ns.quotas {
 		nsUsage := quota.used.local
 		if nsUsage != nil {
-			if err := ns.UseResources(quotaName, v1.ResourceList{}); err != nil {
+			if err := ns.UseResources(rqName, v1.ResourceList{}); err != nil {
 				return err
 			}
 		}
-		nsUsages[quotaName] = nsUsage
+		nsUsages[rqName] = nsUsage
 	}
 
 	// Remove old parent and cleans it up.
@@ -63,9 +63,9 @@ func (ns *Namespace) SetParent(p *Namespace) error {
 		p.children[ns.name] = ns
 	}
 	// Add usage to new subtree.
-	for quotaName, nsUsage := range nsUsages {
+	for rqName, nsUsage := range nsUsages {
 		if nsUsage != nil {
-			if err := ns.UseResources(quotaName, nsUsage); err != nil {
+			if err := ns.UseResources(rqName, nsUsage); err != nil {
 				return err
 			}
 		}

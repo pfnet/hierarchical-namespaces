@@ -27,7 +27,7 @@ const (
 	fooHRQName = "foo-quota"
 	barHRQName = "bar-quota"
 	bazHRQName = "baz-quota"
-	quotaName  = "hrq.hnc.x-k8s.io"
+	rqName     = "hrq.hnc.x-k8s.io"
 )
 
 var _ = Describe("HRQ reconciler tests", func() {
@@ -150,7 +150,7 @@ var _ = Describe("HRQ reconciler tests", func() {
 
 		// Scoped HRQs don't affect the result of TestCheckHRQDrift.
 		forestOverrideSubtreeUsages("hrq-selector", "cpu", "3")
-		updateRQUsage(ctx, fooName, utils.ScoepdRQName("hrq-selector"), "cpu", "5")
+		updateRQUsage(ctx, fooName, utils.ScopedRQName("hrq-selector"), "cpu", "5")
 		drift, err = TestCheckHRQDrift()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(drift).Should(BeFalse())
@@ -251,7 +251,7 @@ var _ = Describe("HRQ reconciler tests", func() {
 func forestOverrideSubtreeUsages(ns string, args ...string) {
 	TestForest.Lock()
 	defer TestForest.Unlock()
-	TestForest.Get(ns).TestOnlySetSubtreeUsage(argsToResourceList(0, args...), quotaName)
+	TestForest.Get(ns).TestOnlySetSubtreeUsage(argsToResourceList(0, args...), rqName)
 }
 
 func getHRQStatus(ctx context.Context, ns, nm string) func() v1.ResourceList {

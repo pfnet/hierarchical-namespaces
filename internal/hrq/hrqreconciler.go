@@ -53,7 +53,7 @@ type HierarchicalResourceQuotaReconciler struct {
 	Forest *forest.Forest
 	// trigger is a channel of event.GenericEvent (see "Watching Channels" in
 	// https://book-v1.book.kubebuilder.io/beyond_basics/controller_watches.html)
-	// that is used to enqueue the singleton to trigger reconciliation.
+	// that is used to enqueue RQs to trigger reconciliation.
 	trigger chan event.GenericEvent
 	// RQEnqueuer enqueues ResourceQuota objects when HierarchicalResourceQuota
 	// objects change.
@@ -98,7 +98,7 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 
 	rqName := api.ResourceQuotaSingletonName
 	if r.Forest.IsMarkedAsScopedHRQ(req.NamespacedName) {
-		rqName = utils.ScoepdRQName(inst.GetName())
+		rqName = utils.ScopedRQName(inst.GetName())
 	}
 
 	// Enqueue ResourceQuota objects in the current namespace and its descendants
@@ -127,7 +127,7 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	nn := types.NamespacedName{Name: inst.GetName(), Namespace: inst.GetNamespace()}
 	if isScopedHRQ {
 		r.Forest.MarkScopedRQ(nn)
-		rqName = utils.ScoepdRQName(inst.GetName())
+		rqName = utils.ScopedRQName(inst.GetName())
 	} else if !r.Forest.IsMarkedAsScopedHRQ(nn) {
 		rqName = api.ResourceQuotaSingletonName
 	}
@@ -169,7 +169,7 @@ func (r *HierarchicalResourceQuotaReconciler) syncLimits(inst *api.HierarchicalR
 }
 
 // syncUsages updates resource usage status based on in-memory resource usages.
-func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalResourceQuota, quotaName string) error {
+func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalResourceQuota, rqName string) error {
 	// If the object is deleted, there is no need to update its usage status.
 	if isDeleted(inst) {
 		return nil
@@ -178,7 +178,7 @@ func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalR
 
 	// Filter the usages to only include the resource types being limited by this HRQ and write those
 	// usages back to the HRQ status.
-	usage, err := ns.GetSubtreeUsages(quotaName)
+	usage, err := ns.GetSubtreeUsages(rqName)
 	if err != nil {
 		return err
 	}

@@ -21,7 +21,7 @@ const (
 
 	// The name of the ResourceQuota object created by the
 	// ResourceQuotaReconciler in a namespace.
-	// If HRQ does not have a ScopeSelector, it will be aggregated into a ResouraceQuota with this name.
+	// If HRQ does not have a ScopeSelector, it will be aggregated into a ResourceQuota with this name.
 	ResourceQuotaSingletonName = "hrq." + MetaGroup
 )
 

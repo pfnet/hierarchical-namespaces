@@ -91,10 +91,10 @@ func (n *Namespace) TryUseResources(rl v1.ResourceList, rqName RQName) error {
 	return nil
 }
 
-// canUseResources checks if subtree resouexceed resource limits
-// in the namespace and its ancestors if pource usages were consumed.
-// The method returns an error if any *charee resource usages exceed
-// the corresponding limits; otherwise, itl. Note: if there's no
+// canUseResources checks if subtree resource usages exceed resource limits
+// in the namespace and its ancestors if proposed resource usages were consumed.
+// The method returns an error if any *changing* subtree resource usages exceed
+// the corresponding limits; otherwise, it returns nil. Note: if there's no
 // *change* on a subtree resource usage and it already exceeds limits, we will
 // ignore it because we don't want to block other valid resource usages.
 func (n *Namespace) canUseResources(u v1.ResourceList, rqName RQName) error {
@@ -226,12 +226,12 @@ func (n *Namespace) HRQNames() []string {
 	return names
 }
 
-func (n *Namespace) QuotaNames() []string {
-	quotas := []string{}
-	for k := range n.quotas {
-		quotas = append(quotas, k)
+func (n *Namespace) RQNames() []string {
+	rqNames := []string{}
+	for rqName := range n.quotas {
+		rqNames = append(rqNames, rqName)
 	}
-	return quotas
+	return rqNames
 }
 
 // Limits returns limits limits specified in quotas.limits of the current namespace and
@@ -255,8 +255,8 @@ func (n *Namespace) Limits(rqName string) v1.ResourceList {
 }
 
 // GetLocalUsages returns a copy of local resource usages.
-func (n *Namespace) GetLocalUsages(quotaName string) (v1.ResourceList, error) {
-	quota, ok := n.quotas[quotaName]
+func (n *Namespace) GetLocalUsages(rqName string) (v1.ResourceList, error) {
+	quota, ok := n.quotas[rqName]
 	if !ok {
 		return nil, ErrQuotaNotFound
 	}
@@ -265,8 +265,8 @@ func (n *Namespace) GetLocalUsages(quotaName string) (v1.ResourceList, error) {
 }
 
 // GetSubtreeUsages returns a copy of subtree resource usages.
-func (n *Namespace) GetSubtreeUsages(quotaName string) (v1.ResourceList, error) {
-	quota, ok := n.quotas[quotaName]
+func (n *Namespace) GetSubtreeUsages(rqName string) (v1.ResourceList, error) {
+	quota, ok := n.quotas[rqName]
 	if !ok {
 		return nil, ErrQuotaNotFound
 	}
