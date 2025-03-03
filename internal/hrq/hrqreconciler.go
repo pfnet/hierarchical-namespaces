@@ -24,10 +24,6 @@ import (
 	"sigs.k8s.io/hierarchical-namespaces/internal/logutils"
 )
 
-const (
-	HRQSelectorAnnotation = "hrq.hnc.x-k8s.io/selector"
-)
-
 // RQEnqueuer enqueues ResourceQuota objects in a namespace and its descendants.
 // ResourceQuotaReconciler implements the interface so that it can be called by
 // the HierarchicalResourceQuotaReconciler when HierarchicalResourceQuota objects
@@ -221,8 +217,7 @@ func isDeleted(inst *api.HierarchicalResourceQuota) bool {
 func (r *HierarchicalResourceQuotaReconciler) allSubtreeHRQs(ns *forest.Namespace) []api.HierarchicalResourceQuota {
 	insts := []api.HierarchicalResourceQuota{}
 	for _, nsnm := range ns.AncestryNames() {
-		hrqnms := r.Forest.Get(nsnm).HRQNames()
-		for _, hrqnm := range hrqnms {
+		for _, hrqnm := range r.Forest.Get(nsnm).HRQNames() {
 			inst := api.HierarchicalResourceQuota{}
 			inst.ObjectMeta.Name = hrqnm
 			inst.ObjectMeta.Namespace = nsnm

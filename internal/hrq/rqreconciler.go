@@ -192,9 +192,7 @@ func (r *ResourceQuotaReconciler) reportHRQEvent(ctx context.Context, log logr.L
 		return
 	}
 
-	nnms := r.getAncestorHRQs(inst)
-
-	for _, nnm := range nnms {
+	for _, nnm := range r.getAncestorHRQs(inst) {
 		hrq := &api.HierarchicalResourceQuota{}
 		// Since the Event() func requires the full object as an input, we will
 		// have to get the HRQ from the apiserver here.
@@ -223,8 +221,7 @@ func (r *ResourceQuotaReconciler) getAncestorHRQs(inst *v1.ResourceQuota) []type
 
 	names := []types.NamespacedName{}
 	for _, nsnm := range r.Forest.Get(inst.Namespace).AncestryNames() {
-		hrqnms := r.Forest.Get(nsnm).HRQNames()
-		for _, hrqnm := range hrqnms {
+		for _, hrqnm := range r.Forest.Get(nsnm).HRQNames() {
 			names = append(names, types.NamespacedName{Namespace: nsnm, Name: hrqnm})
 		}
 	}
@@ -290,8 +287,7 @@ func (r *ResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *v1.Resou
 	}
 
 	for _, nsnm := range ns.AncestryNames() {
-		hrqnms := r.Forest.Get(nsnm).HRQNames()
-		for _, qnm := range hrqnms {
+		for _, qnm := range r.Forest.Get(nsnm).HRQNames() {
 			r.HRQR.Enqueue(log, "subtree resource usages may have changed", nsnm, qnm)
 		}
 	}

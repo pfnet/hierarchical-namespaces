@@ -287,7 +287,7 @@ func getRQHard(ctx context.Context, ns, name string) func() v1.ResourceList {
 	}
 }
 
-func getRQScoep(ctx context.Context, ns, name string) func() *v1.ScopeSelector {
+func getRQScope(ctx context.Context, ns, name string) func() *v1.ScopeSelector {
 	return func() *v1.ScopeSelector {
 		nsn := types.NamespacedName{Namespace: ns, Name: name}
 		inst := &v1.ResourceQuota{}

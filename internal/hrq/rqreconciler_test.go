@@ -80,7 +80,7 @@ var _ = Describe("RQ reconciler tests", func() {
 		Eventually(getRQHard(ctx, fooName, rqName)).Should(equalRL("cpu", "4", "pods", "2"))
 		Eventually(getRQHard(ctx, barName, rqName)).Should(equalRL("cpu", "4", "pods", "2"))
 		Eventually(getRQHard(ctx, bazName, rqName)).Should(equalRL("cpu", "4", "pods", "2"))
-		Eventually(getRQScoep(ctx, bazName, rqName)).Should(Equal(&highPrioritySelector))
+		Eventually(getRQScope(ctx, bazName, rqName)).Should(Equal(&highPrioritySelector))
 	})
 
 	It("should update in-memory resource usages after ResourceQuota status changes", func() {
@@ -300,39 +300,6 @@ func updateRQUsage(ctx context.Context, ns, rqName string, args ...string) {
 		return K8sClient.Status().Update(ctx, rq)
 	}).Should(Succeed(), "Updating usage in %s to %v", ns, args)
 }
-
-// setHRQ creates or replaces an existing HRQ with the given resource limits. Any existing spec is
-// replaced by this function.
-// func setHRQ(ctx context.Context, nm, ns string, args ...string) {
-// 	nsn := types.NamespacedName{Namespace: ns, Name: nm}
-// 	hrq := &api.HierarchicalResourceQuota{
-// 		ObjectMeta: metav1.ObjectMeta{
-// 			Name:      nm,
-// 			Namespace: ns,
-// 		},
-// 	}
-// 	EventuallyWithOffset(1, func() error {
-// 		err := K8sClient.Get(ctx, nsn, hrq)
-// 		if errors.IsNotFound(err) {
-// 			return nil
-// 		}
-// 		return err
-// 	}).Should(Succeed(), "While checking if HRQ %s/%s already exists", ns, nm)
-//
-// 	hrq.Spec.Hard = argsToResourceList(1, args...)
-//
-// 	EventuallyWithOffset(1, func() error {
-// 		if hrq.CreationTimestamp.IsZero() {
-// 			err := K8sClient.Create(ctx, hrq)
-// 			if err == nil {
-// 				createdHRQs = append(createdHRQs, hrq)
-// 			}
-// 			return err
-// 		} else {
-// 			return K8sClient.Update(ctx, hrq)
-// 		}
-// 	}).Should(Succeed(), "While updating HRQ; %+v", hrq)
-// }
 
 // setHRQ creates or replaces an existing HRQ with the given resource limits. Any existing spec is
 // replaced by this function.
