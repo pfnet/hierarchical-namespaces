@@ -132,19 +132,38 @@ func watchHRQDrift(f *forest.Forest, forestSyncInterval time.Duration, hrqr *hrq
 	}
 }
 
-func checkHRQDrift(f *forest.Forest, hrqr *hrq.HierarchicalResourceQuotaReconciler) bool {
+func checkHRQDrift(f *forest.Forest, hrqr *hrq.HierarchicalResourceQuotaReconciler) (bool, error) {
 	f.Lock()
 	defer f.Unlock()
 	found := false
-	for _, nsnm := range f.RectifySubtreeUsages(hrqr.Log) {
+
+	subtreeUsages, err := f.RectifySubtreeUsages(hrqr.Log)
+	if err != nil {
+		return false, err
+	}
+
+	for _, nsnm := range subtreeUsages {
 		found = true
 		hrqr.Enqueue(hrqr.Log, "usage out-of-sync", nsnm.Namespace, nsnm.Name)
 	}
-	return found
+
+	// If there is more than one quota, depending on the order in which they are evaluated,
+	// if one is allowed by the quota, the usage should be returned.
+	// Implementing this is tricky, so we will cheat by doing periodic synchronisation.
+	for ns, rqNames := range f.NamespaceHavingScopedHRQ() {
+		for _, rqName := range rqNames {
+			reason := "Periodic synchronization"
+			hrqr.Enqueue(hrqr.Log, reason, ns, rqName)
+		}
+	}
+
+	f.CleanupQuotas(hrqr.Log)
+
+	return found, nil
 }
 
 // TestOnlyCheckHRQDrift is used in the integ tests to invoke the checker at exactly the right time
 // to verify that it works as expected.
-func TestOnlyCheckHRQDrift(f *forest.Forest) bool {
+func TestOnlyCheckHRQDrift(f *forest.Forest) (bool, error) {
 	return checkHRQDrift(f, hrqrForTesting)
 }

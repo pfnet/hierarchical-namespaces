@@ -36,12 +36,19 @@ func (ns *Namespace) IsAncestor(other *Namespace) bool {
 // SetParent modifies the namespace's parent, including updating the list of children and updating
 // the old and new subtree usage. It may result in a cycle being created; this can be prevented by
 // calling CanSetParent before, or seeing if it happened by calling CycleNames afterwards.
-func (ns *Namespace) SetParent(p *Namespace) {
+func (ns *Namespace) SetParent(p *Namespace) error {
 	// Remove usage from old subtree.
-	nsUsage := ns.quotas.used.local
-	if nsUsage != nil {
-		ns.UseResources(v1.ResourceList{})
+	nsUsages := make(map[string]v1.ResourceList)
+	for rqName, quota := range ns.quotas {
+		nsUsage := quota.used.local
+		if nsUsage != nil {
+			if err := ns.UseResources(rqName, v1.ResourceList{}); err != nil {
+				return err
+			}
+		}
+		nsUsages[rqName] = nsUsage
 	}
+
 	// Remove old parent and cleans it up.
 	if ns.parent != nil {
 		delete(ns.parent.children, ns.name)
@@ -56,9 +63,15 @@ func (ns *Namespace) SetParent(p *Namespace) {
 		p.children[ns.name] = ns
 	}
 	// Add usage to new subtree.
-	if nsUsage != nil {
-		ns.UseResources(nsUsage)
+	for rqName, nsUsage := range nsUsages {
+		if nsUsage != nil {
+			if err := ns.UseResources(rqName, nsUsage); err != nil {
+				return err
+			}
+		}
 	}
+
+	return nil
 }
 
 // CanSetParent returns the empty string if the assignment is currently legal, or a non-empty string

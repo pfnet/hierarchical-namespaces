@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
-	"sigs.k8s.io/hierarchical-namespaces/internal/hrq"
+	"sigs.k8s.io/hierarchical-namespaces/internal/hrq/utils"
 	. "sigs.k8s.io/hierarchical-namespaces/internal/integtest"
 )
 
@@ -27,6 +27,7 @@ const (
 	fooHRQName = "foo-quota"
 	barHRQName = "bar-quota"
 	bazHRQName = "baz-quota"
+	rqName     = "hrq.hnc.x-k8s.io"
 )
 
 var _ = Describe("HRQ reconciler tests", func() {
@@ -37,6 +38,16 @@ var _ = Describe("HRQ reconciler tests", func() {
 		barName string
 		bazName string
 	)
+
+	highPrioritySelector := v1.ScopeSelector{
+		MatchExpressions: []v1.ScopedResourceSelectorRequirement{
+			{
+				Operator:  v1.ScopeSelectorOpIn,
+				ScopeName: "PriorityClass",
+				Values:    []string{"high"},
+			},
+		},
+	}
 
 	BeforeEach(func() {
 		fooName = CreateNS(ctx, "foo")
@@ -60,35 +71,35 @@ var _ = Describe("HRQ reconciler tests", func() {
 	})
 
 	It("should set limits in status correctly after creating an HRQ object", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
 
 		Eventually(getHRQStatus(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "6", "pods", "3"))
 	})
 
 	It("should update limits in status correctly after updating limits in spec", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
 
 		Eventually(getHRQStatus(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "6", "pods", "3"))
 
 		// Change limits for secrets from 6 to 50
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "50", "pods", "3")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "50", "pods", "3")
 
 		Eventually(getHRQStatus(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "50", "pods", "3"))
 	})
 
 	It("should update usages in status correctly after consuming a resource", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100", "cpu", "50")
-		setHRQ(ctx, bazHRQName, bazName, "pods", "1")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
+		setHRQ(ctx, bazHRQName, bazName, nil, "pods", "1")
 		// Simulate the K8s ResourceQuota controller to update usages.
-		updateRQUsage(ctx, fooName, "secrets", "0", "pods", "0")
-		updateRQUsage(ctx, barName, "secrets", "0", "cpu", "0", "pods", "0")
-		updateRQUsage(ctx, bazName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, fooName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "0", "cpu", "0", "pods", "0")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
 
 		// Increase secret counts from 0 to 10 in baz and verify that the usage is
 		// increased in foo's HRQ but not bar's (not an ancestor of baz) or baz'
 		// (secrets is not limited in baz' HRQ).
-		updateRQUsage(ctx, bazName, "secrets", "10")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "10")
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "10", "pods", "0"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "0", "cpu", "0"))
 		Eventually(getHRQUsed(ctx, bazName, bazHRQName)).Should(equalRL("pods", "0"))
@@ -96,55 +107,67 @@ var _ = Describe("HRQ reconciler tests", func() {
 		// Increase secret counts from 10 to 11 in baz and verify that the usage is
 		// increased in foo's HRQ. bar's (not an ancestor of baz) and baz' (secrets
 		// is not limited in baz' HRQ) remain unchanged.
-		updateRQUsage(ctx, bazName, "secrets", "11")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "11")
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "11", "pods", "0"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "0", "cpu", "0"))
 		Eventually(getHRQUsed(ctx, bazName, bazHRQName)).Should(equalRL("pods", "0"))
 
 		// Decrease secret counts from 10 to 0 in baz and ensure all usages are gone.
-		updateRQUsage(ctx, bazName, "secrets", "0")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "0")
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "0", "pods", "0"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "0", "cpu", "0"))
 		Eventually(getHRQUsed(ctx, bazName, bazHRQName)).Should(equalRL("pods", "0"))
 	})
 
 	It("should update limits in ResourceQuota objects correctly after deleting an HRQ object", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100", "cpu", "50")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
 
 		// The RQ in foo should equal its HRQ, while in bar it should be the intersection
-		Eventually(getRQSpec(ctx, fooName)).Should(equalRL("secrets", "6", "pods", "3"))
-		Eventually(getRQSpec(ctx, barName)).Should(equalRL("secrets", "6", "pods", "3", "cpu", "50"))
+		Eventually(getRQHard(ctx, fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "3"))
+		Eventually(getRQHard(ctx, barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "3", "cpu", "50"))
 
 		// After deleting foo's HRQ, bar's RQ should be the same as its HRQ on its own
 		deleteHierarchicalResourceQuota(ctx, fooName, fooHRQName)
-		Eventually(getRQSpec(ctx, fooName)).Should(equalRL())
-		Eventually(getRQSpec(ctx, barName)).Should(equalRL("secrets", "100", "cpu", "50"))
+		Eventually(getRQHard(ctx, fooName, api.ResourceQuotaSingletonName)).Should(equalRL())
+		Eventually(getRQHard(ctx, barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "100", "cpu", "50"))
 	})
 
 	It("should recover if the subtree usages are out of sync in the forest and in reality", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "100")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "100")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100")
+		setHRQ(ctx, "hrq-selector", fooName, &highPrioritySelector, "cpu", "4", "pods", "2")
 
 		// Consume 10 secrets in bar and verified that they're used
-		updateRQUsage(ctx, barName, "secrets", "10")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "10")
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "10"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "10"))
 
 		// If we do the check now, it shouldn't find anything
-		Expect(TestCheckHRQDrift()).Should(Equal(false))
+		drift, err := TestCheckHRQDrift()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(drift).Should(BeFalse())
+
+		// Scoped HRQs don't affect the result of TestCheckHRQDrift.
+		forestOverrideSubtreeUsages("hrq-selector", "cpu", "3")
+		updateRQUsage(ctx, fooName, utils.ScopedRQName("hrq-selector"), "cpu", "5")
+		drift, err = TestCheckHRQDrift()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(drift).Should(BeFalse())
 
 		// Introduce a bug to make the foo subtree usages in the forest out-of-sync. Pretend that we
 		// somehow dropped a secret.
 		forestOverrideSubtreeUsages(fooName, "secrets", "9")
 
 		// Now use an additional secret in the child. The parent should still be out-of-sync by one.
-		updateRQUsage(ctx, barName, "secrets", "11")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "11")
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "10"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "11"))
 
 		// Run the checker and make sure it finds something
-		Expect(TestCheckHRQDrift()).Should(Equal(true))
+		drift, err = TestCheckHRQDrift()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(drift).Should(BeTrue())
 
 		// And everything should be in sync again
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "11"))
@@ -153,27 +176,27 @@ var _ = Describe("HRQ reconciler tests", func() {
 
 	It("should enqueue subtree even if the newly created HRQ has the same `spec.hard` and `status.hard`", func() {
 		// Verify RQ singletons in the subtree are not created before the test.
-		Eventually(getRQSpec(ctx, barName)).Should(equalRL())
-		Eventually(getRQSpec(ctx, bazName)).Should(equalRL())
+		Eventually(getRQHard(ctx, barName, api.ResourceQuotaSingletonName)).Should(equalRL())
+		Eventually(getRQHard(ctx, bazName, api.ResourceQuotaSingletonName)).Should(equalRL())
 		// Create an HRQ with the same `spec.hard` and `status.hard`.
 		setHRQwithSameStatus(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
 		// Verify the subtree is enqueued to update.
-		Eventually(getRQSpec(ctx, barName)).Should(equalRL("secrets", "6", "pods", "3"))
-		Eventually(getRQSpec(ctx, bazName)).Should(equalRL("secrets", "6", "pods", "3"))
+		Eventually(getRQHard(ctx, barName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "3"))
+		Eventually(getRQHard(ctx, bazName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "3"))
 	})
 
 	It("should update usages in status correctly after moving namespace out of subtree", func() {
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100", "cpu", "50")
-		setHRQ(ctx, bazHRQName, bazName, "pods", "1")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
+		setHRQ(ctx, bazHRQName, bazName, nil, "pods", "1")
 		// Simulate the K8s ResourceQuota controller to update usages.
-		updateRQUsage(ctx, fooName, "secrets", "0", "pods", "0")
-		updateRQUsage(ctx, barName, "secrets", "0", "cpu", "0", "pods", "0")
-		updateRQUsage(ctx, bazName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, fooName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "0", "cpu", "0", "pods", "0")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
 
 		// Increase pods count from 0 to 1 in baz and verify that the usage is
 		// increased in foo's HRQ but not bar's (not an ancestor of baz)
-		updateRQUsage(ctx, bazName, "pods", "1")
+		updateRQUsage(ctx, bazName, api.ResourceQuotaSingletonName, "pods", "1")
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "0", "pods", "1"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "0", "cpu", "0"))
 		Eventually(getHRQUsed(ctx, bazName, bazHRQName)).Should(equalRL("pods", "1"))
@@ -199,16 +222,16 @@ var _ = Describe("HRQ reconciler tests", func() {
 
 		Eventually(HasChild(ctx, fooName, barName)).ShouldNot(Equal(true))
 
-		setHRQ(ctx, fooHRQName, fooName, "secrets", "6", "pods", "3")
-		setHRQ(ctx, barHRQName, barName, "secrets", "100", "cpu", "50")
+		setHRQ(ctx, fooHRQName, fooName, nil, "secrets", "6", "pods", "3")
+		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
 
 		// Simulate the K8s ResourceQuota controller to update usages.
-		updateRQUsage(ctx, fooName, "secrets", "0", "pods", "0")
-		updateRQUsage(ctx, barName, "secrets", "0", "cpu", "0", "pods", "0")
+		updateRQUsage(ctx, fooName, api.ResourceQuotaSingletonName, "secrets", "0", "pods", "0")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "0", "cpu", "0", "pods", "0")
 
 		// Increase secrets count from 0 to 1 in bar and verify that the usage is
 		// increased in bar's HRQ but not foo's (not an ancestor of baz)
-		updateRQUsage(ctx, barName, "secrets", "1")
+		updateRQUsage(ctx, barName, api.ResourceQuotaSingletonName, "secrets", "1")
 		Eventually(getHRQUsed(ctx, fooName, fooHRQName)).Should(equalRL("secrets", "0", "pods", "0"))
 		Eventually(getHRQUsed(ctx, barName, barHRQName)).Should(equalRL("secrets", "1", "cpu", "0"))
 
@@ -228,7 +251,7 @@ var _ = Describe("HRQ reconciler tests", func() {
 func forestOverrideSubtreeUsages(ns string, args ...string) {
 	TestForest.Lock()
 	defer TestForest.Unlock()
-	TestForest.Get(ns).TestOnlySetSubtreeUsage(argsToResourceList(0, args...))
+	TestForest.Get(ns).TestOnlySetSubtreeUsage(argsToResourceList(0, args...), rqName)
 }
 
 func getHRQStatus(ctx context.Context, ns, nm string) func() v1.ResourceList {
@@ -253,14 +276,25 @@ func getHRQUsed(ctx context.Context, ns, nm string) func() v1.ResourceList {
 	}
 }
 
-func getRQSpec(ctx context.Context, ns string) func() v1.ResourceList {
+func getRQHard(ctx context.Context, ns, name string) func() v1.ResourceList {
 	return func() v1.ResourceList {
-		nsn := types.NamespacedName{Namespace: ns, Name: hrq.ResourceQuotaSingleton}
+		nsn := types.NamespacedName{Namespace: ns, Name: name}
 		inst := &v1.ResourceQuota{}
 		if err := K8sClient.Get(ctx, nsn, inst); err != nil {
 			return nil
 		}
 		return inst.Spec.Hard
+	}
+}
+
+func getRQScope(ctx context.Context, ns, name string) func() *v1.ScopeSelector {
+	return func() *v1.ScopeSelector {
+		nsn := types.NamespacedName{Namespace: ns, Name: name}
+		inst := &v1.ResourceQuota{}
+		if err := K8sClient.Get(ctx, nsn, inst); err != nil {
+			return nil
+		}
+		return inst.Spec.ScopeSelector
 	}
 }
 
