@@ -5,6 +5,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/forest"
 	"sigs.k8s.io/hierarchical-namespaces/internal/hrq/utils"
 )
@@ -34,22 +35,35 @@ func TestRQStatusChange(t *testing.T) {
 			f := forest.NewForest()
 			nsA := f.Get("a")
 			nsB := f.Get("b")
-			nsB.SetParent(nsA)
+			err := nsB.SetParent(nsA)
+			if err != nil {
+				t.Fatalf("failed to set parent: %v", err)
+			}
+
 			// Add an HRQ with limits of 2 secrets and 2 configmaps in 'a'.
-			nsA.UpdateLimits("a-hrq", argsToResourceList("configmaps", "2", "secrets", "2"))
+			nsA.UpdateLimits("a-hrq", api.ResourceQuotaSingletonName, argsToResourceList("configmaps", "2", "secrets", "2"))
 			// Add a looser HRQ with limits of 10 secrets and 10 configmaps in 'b'.
-			nsB.UpdateLimits("b-hrq", argsToResourceList("configmaps", "10", "secrets", "10"))
+			nsB.UpdateLimits("b-hrq", api.ResourceQuotaSingletonName, argsToResourceList("configmaps", "10", "secrets", "10"))
+
 			// Consume 1 configmap in 'a' and 1 secret in 'b'.
-			nsA.UseResources(argsToResourceList("configmaps", "1"))
-			nsB.UseResources(argsToResourceList("secrets", "1"))
+			err = nsA.UseResources(api.ResourceQuotaSingletonName, argsToResourceList("configmaps", "1"))
+			if err != nil {
+				t.Fatalf("failed to use resources for %s: %v", nsA.Name(), err)
+			}
+			err = nsB.UseResources(api.ResourceQuotaSingletonName, argsToResourceList("secrets", "1"))
+			if err != nil {
+				t.Fatalf("failed to use resources for %s: %v", nsB.Name(), err)
+			}
 			rqs := &ResourceQuotaStatus{Forest: f}
 
 			// Construct the requested instance from the delta usages specified in the
 			// test case and what's in forest.
 			rqInst := &v1.ResourceQuota{}
+			rqInst.Name = api.ResourceQuotaSingletonName
 			rqInst.Namespace = tc.namespace
 			delta := argsToResourceList(tc.consume...)
-			rqInst.Status.Used = utils.Add(delta, f.Get(tc.namespace).GetLocalUsages())
+			usage, _ := f.Get(tc.namespace).GetLocalUsages(api.ResourceQuotaSingletonName)
+			rqInst.Status.Used = utils.Add(delta, usage)
 
 			got := rqs.handle(rqInst)
 			if got.AdmissionResponse.Allowed == tc.fail {

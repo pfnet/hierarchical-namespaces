@@ -18,6 +18,11 @@ const (
 	// write ResourceQuota from an HRQ. Usually it means the HRQ has invalid
 	// resource quota types. The error message will point to the HRQ object.
 	EventCannotWriteResourceQuota string = "CannotWriteResourceQuota"
+
+	// The name of the ResourceQuota object created by the
+	// ResourceQuotaReconciler in a namespace.
+	// If HRQ does not have a ScopeSelector, it will be aggregated into a ResourceQuota with this name.
+	ResourceQuotaSingletonName = "hrq." + MetaGroup
 )
 
 // HierarchicalResourceQuotaSpec defines the desired hard limits to enforce for
@@ -26,6 +31,11 @@ type HierarchicalResourceQuotaSpec struct {
 	// Hard is the set of desired hard limits for each named resource
 	// +optional
 	Hard corev1.ResourceList `json:"hard,omitempty"`
+
+	// ScopeSelector is also a collection of filters like Scopes that must match each object tracked by a quota
+	// but expressed using ScopeSelectorOperator in combination with possible values.
+	// +optional
+	ScopeSelector *corev1.ScopeSelector `json:"scopeSelector,omitempty"`
 }
 
 // HierarchicalResourceQuotaStatus defines the enforced hard limits and observed

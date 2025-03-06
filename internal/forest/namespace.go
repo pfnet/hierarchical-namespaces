@@ -4,13 +4,16 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
+	"sigs.k8s.io/hierarchical-namespaces/internal/hrq/utils"
 )
 
 // While storing the V in GVK is not strictly necessary to match what's in the HNC type configuration,
@@ -18,6 +21,8 @@ import (
 // with the API server. Since we need the V to work with the API server anyways anyways, we will choose to
 // use the GVK as the key in this map.
 type objects map[schema.GroupVersionKind]map[string]*unstructured.Unstructured
+
+type RQName = string
 
 // Namespace represents a namespace in a forest. Other than its structure, it contains some
 // properties useful to the reconcilers.
@@ -62,7 +67,8 @@ type Namespace struct {
 	Manager string
 
 	// quotas stores information about the hierarchical quotas and resource usage in this namespace
-	quotas quotas
+	quotas     map[RQName]*quotas
+	quotasLock sync.RWMutex
 }
 
 // Name returns the name of the namespace, of "<none>" if the namespace is nil.
@@ -203,4 +209,54 @@ func (ns *Namespace) HasAnchor(n string) bool {
 // IsExternal returns true if the namespace is not managed by HNC.
 func (ns *Namespace) IsExternal() bool {
 	return ns.Manager != "" && ns.Manager != api.MetaGroup
+}
+
+func (ns *Namespace) SetQuota(rqName RQName) *quotas {
+	ns.quotasLock.Lock()
+	defer ns.quotasLock.Unlock()
+
+	q := &quotas{}
+	ns.quotas[rqName] = q
+	return q
+}
+
+func (ns *Namespace) ScopedRQNames() []RQName {
+	ns.quotasLock.RLock()
+	defer ns.quotasLock.RUnlock()
+
+	var qs []RQName
+	for rqName := range ns.quotas {
+		rq := &corev1.ResourceQuota{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      rqName,
+				Namespace: ns.Name(),
+			},
+		}
+		if utils.IsScopedRQ(rq) {
+			qs = append(qs, rqName)
+		}
+	}
+	return qs
+}
+
+func (ns *Namespace) RemoveQuota(rqName RQName) {
+	ns.quotasLock.Lock()
+	defer ns.quotasLock.Unlock()
+
+	delete(ns.quotas, rqName)
+}
+
+func (ns *Namespace) GetQuota(rqName RQName) (*quotas, bool) {
+	ns.quotasLock.RLock()
+	defer ns.quotasLock.RUnlock()
+
+	quota, ok := ns.quotas[rqName]
+	return quota, ok
+}
+
+func (ns *Namespace) GetQuotas() map[RQName]*quotas {
+	ns.quotasLock.RLock()
+	defer ns.quotasLock.RUnlock()
+
+	return ns.quotas
 }

@@ -136,6 +136,6 @@ func HNCAfterSuite() {
 	Expect(err).ToNot(HaveOccurred())
 }
 
-func TestCheckHRQDrift() bool {
+func TestCheckHRQDrift() (bool, error) {
 	return setup.TestOnlyCheckHRQDrift(TestForest)
 }

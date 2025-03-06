@@ -2,6 +2,7 @@ package hrq
 
 import (
 	"context"
+	"strings"
 
 	"github.com/go-logr/logr"
 	k8sadm "k8s.io/api/admission/v1"
@@ -11,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/forest"
 	"sigs.k8s.io/hierarchical-namespaces/internal/logutils"
 )
@@ -47,7 +49,7 @@ func (r *ResourceQuotaStatus) Handle(ctx context.Context, req admission.Request)
 	// (or denying) status update requests from the admission controller.
 	//
 	// Thus we will allow any non-HRQ-singleton RQ updates first.
-	if req.Name != ResourceQuotaSingleton {
+	if !strings.Contains(req.Name, api.ResourceQuotaSingletonName) {
 		return allow("non-HRQ-singleton RQ status change ignored")
 	}
 
@@ -78,7 +80,7 @@ func (r *ResourceQuotaStatus) handle(inst *v1.ResourceQuota) admission.Response 
 	defer r.Forest.Unlock()
 
 	ns := r.Forest.Get(inst.Namespace)
-	if err := ns.TryUseResources(inst.Status.Used); err != nil {
+	if err := ns.TryUseResources(inst.Status.Used, inst.GetName()); err != nil {
 		return deny(metav1.StatusReasonForbidden, err.Error())
 	}
 
