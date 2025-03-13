@@ -19,22 +19,6 @@ builds:
   - -a
   ldflags:
   - -s -w -X github.com/pfnet/hierarchical-namespaces/cmd.Version={{.Version}} -X github.com/pfnet/hierarchical-namespaces/cmd.Revision={{.ShortCommit}} -extldflags "-static"
-- id: api-extension
-  env:
-  - CGO_ENABLED=0
-  - GO111MODULE=on
-  main: ./cmd/apiextension/main.go
-  binary: apiextension
-  goos:
-  - linux
-  - darwin
-  goarch:
-  - amd64
-  - arm64
-  flags:
-  - -a
-  ldflags:
-  - -s -w -X github.com/pfnet/hierarchical-namespaces/cmd.Version={{.Version}} -X github.com/pfnet/hierarchical-namespaces/cmd.Revision={{.ShortCommit}} -extldflags "-static"
 
 dockers:
 - image_templates: ["ghcr.io/pfnet/{{ .ProjectName }}:{{ .Version }}-amd64"]

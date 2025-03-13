@@ -1,5 +1,4 @@
 FROM debian:bullseye-slim
 WORKDIR /
 COPY manager /manager
-COPY apiextension /apiextension
 ENTRYPOINT ["/manager"]
