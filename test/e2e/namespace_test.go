@@ -8,7 +8,7 @@ import (
 	. "sigs.k8s.io/hierarchical-namespaces/pkg/testutils"
 )
 
-var _ = Describe("Namespace", func() {
+var _ = Describe("Namespace", Serial, func() {
 	const (
 		prefix              = namspacePrefix + "namespace-"
 		nsA                 = prefix + "a"
