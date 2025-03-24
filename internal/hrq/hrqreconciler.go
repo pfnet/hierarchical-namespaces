@@ -120,8 +120,8 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	if isScopedHRQ {
 		r.Forest.MarkScopedRQ(nn)
 		rqName = utils.ScopedRQName(inst.GetName())
-	} else if !r.Forest.IsMarkedAsScopedHRQ(nn) {
-		rqName = api.ResourceQuotaSingletonName
+	} else if r.Forest.IsMarkedAsScopedHRQ(nn) {
+		rqName = utils.ScopedRQName(inst.GetName())
 	}
 
 	updatedInst := false
