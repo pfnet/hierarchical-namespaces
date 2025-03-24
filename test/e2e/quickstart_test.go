@@ -8,7 +8,7 @@ import (
 	. "sigs.k8s.io/hierarchical-namespaces/pkg/testutils"
 )
 
-var _ = Describe("Quickstart", func() {
+var _ = Describe("Quickstart", Serial, func() {
 	// Tests for the HNC user guide quickstarts
 	const (
 		nsOrg      = "acme-org"

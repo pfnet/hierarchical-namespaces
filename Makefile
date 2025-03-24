@@ -304,7 +304,6 @@ buildx-setup:
 docker-push-multi: buildx-setup generate fmt vet staticcheck
 	@echo "Warning: this does not run tests. Run 'make test' to ensure tests are passing."
 	docker buildx build \
-	--push \
 	--platform linux/arm64,linux/amd64,linux/arm/v7  --tag ${HNC_IMG} .
 
 ###################### KIND ACTIONS #########################
@@ -356,6 +355,13 @@ test-e2e-batch: warn-hnc-repair
 		go clean -testcache ; \
 		go test -v -timeout 0 ./test/e2e/... ; \
 	done
+
+PHONY: test-pfnet-e2e-parallel
+test-pfnet-e2e-parallel:
+	kind get kubeconfig --name kind > /tmp/kind-hnc-config
+	export KUBECONFIG=/tmp/kind-hnc-config && kubectl -n hnc-system patch deployment hnc-controller-manager -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","resources":{"limits":{"cpu":null}}}]}}}}'
+	export KUBECONFIG=/tmp/kind-hnc-config && kubectl -n hnc-system wait --for=condition=available deployment/hnc-controller-manager --timeout=5m
+	export KUBECONFIG=/tmp/kind-hnc-config && ginkgo run -p --label-filter pfnet ./test/e2e/...
 
 # This will *only* run a small number of tests (specifically, the quickstarts). You can run this when you're fairly confident that
 # everything will work, but be sure to watch for the postsubmits and periodic tests to ensure they pass too.

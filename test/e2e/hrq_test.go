@@ -29,7 +29,7 @@ const (
 )
 
 // HRQ tests are pending (disabled) until we turn them on in all the default manifests
-var _ = PDescribe("Hierarchical Resource Quota", func() {
+var _ = PDescribe("Hierarchical Resource Quota", Serial, func() {
 	BeforeEach(func() {
 		rand.Seed(time.Now().UnixNano())
 		CleanupTestNamespaces()

@@ -7,7 +7,7 @@ import (
 	. "sigs.k8s.io/hierarchical-namespaces/pkg/testutils"
 )
 
-var _ = Describe("Issues", func() {
+var _ = Describe("Issues", Serial, func() {
 
 	const (
 		nsParent   = "parent"
