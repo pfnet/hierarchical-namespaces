@@ -65,6 +65,8 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
+	log.Info("Reconciling HRQ", "name", req.NamespacedName.Name, "namespace", req.NamespacedName.Namespace, "Hard", inst.Spec.Hard, "scopeSelector", inst.Spec.ScopeSelector)
+
 	// If an object is deleted, assign the name and namespace of the request to
 	// the object so that they can be used to sync with the forest.
 	if isDeleted(inst) {
@@ -74,7 +76,7 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 	oldUsages := inst.Status.Used
 
 	// Sync with forest to update the HRQ or the in-memory forest.
-	updatedInst, updatedForest, err := r.syncWithForest(inst)
+	updatedInst, updatedForest, err := r.syncWithForest(log, inst)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -109,7 +111,7 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 // syncWithForest syncs resource limits and resource usages with the in-memory
 // forest. The first return value is true if the HRQ object is updated; the
 // second return value is true if the forest is updated.
-func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.HierarchicalResourceQuota) (bool, bool, error) {
+func (r *HierarchicalResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *api.HierarchicalResourceQuota) (bool, bool, error) {
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 
@@ -118,10 +120,14 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	rqName := api.ResourceQuotaSingletonName
 	nn := types.NamespacedName{Name: inst.GetName(), Namespace: inst.GetNamespace()}
 	if isScopedHRQ {
+		log.Info("Marking HRQ as scoped", "name", inst.GetName(), "namespace", inst.GetNamespace())
 		r.Forest.MarkScopedRQ(nn)
 		rqName = utils.ScopedRQName(inst.GetName())
 	} else if r.Forest.IsMarkedAsScopedHRQ(nn) {
+		log.Info("Detect the Scoped HRQ because of the mark")
 		rqName = utils.ScopedRQName(inst.GetName())
+	} else {
+		log.Info("HRQ is a singleton")
 	}
 
 	updatedInst := false
@@ -139,7 +145,11 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	}
 
 	// Update HRQ usages if they are changed.
-	r.syncUsages(inst, rqName)
+	err = r.syncUsages(inst, rqName)
+	if err != nil {
+		return false, false, err
+	}
+
 	updatedInst = updatedInst || !utils.Equals(oldUsages, inst.Status.Used)
 
 	return updatedInst, updatedForest, nil
