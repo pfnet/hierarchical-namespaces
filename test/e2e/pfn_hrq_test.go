@@ -178,13 +178,16 @@ func setScopedHRQ(nm, nsnm string, resourceList corev1.ResourceList, scopeSelect
 }
 
 func setUpParentAndChild() (string, string, func()) {
-	parentNs := createNS("hrq-test-parent-")
-	childNs := createSubNS(parentNs)
+	// There was the case where bug has occurred when there is a grandchildren namespace, so We'll make one.
+	rootNs := createNS("root-")
+	parentNs := createSubNS(rootNs, "parent-")
+	childNs := createSubNS(parentNs, "child-")
 	cleanup := func() {
+		MustRunWithTimeout(cleanupTimeout, "kubectl annotate ns", rootNs , "hnc.x-k8s.io/subnamespace-of-")
 		MustRunWithTimeout(cleanupTimeout, "kubectl annotate ns", parentNs, "hnc.x-k8s.io/subnamespace-of-")
 		MustRunWithTimeout(cleanupTimeout, "kubectl annotate ns", childNs, "hnc.x-k8s.io/subnamespace-of-")
 		var wg sync.WaitGroup
-		for _, ns := range []string{parentNs, childNs} {
+		for _, ns := range []string{rootNs, parentNs, childNs} {
 			wg.Add(1)
 			go func(ns string) {
 				MustRun("kubectl delete ns", ns)
@@ -204,8 +207,8 @@ func createNS(prefix string) string {
 	return nsName
 }
 
-func createSubNS(parent string) string {
-	nsName := "hrq-test-child-" + uuid.New().String()
+func createSubNS(parent, prefix string) string {
+	nsName := prefix + uuid.New().String()
 	MustRun("kubectl hns create", nsName, "-n", parent)
 	return nsName
 }

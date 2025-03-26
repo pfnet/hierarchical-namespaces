@@ -188,7 +188,8 @@ func (n *Namespace) UseResources(rqName string, newUsage v1.ResourceList) error 
 
 		nsQuota, ok := ns.quotas[rqName]
 		if !ok {
-			return fmt.Errorf("no quota found for %q", rqName)
+			// This is a parent or above namespace.
+			continue
 		}
 
 		// Get the new subtree usage and remove no longer limited usages.
