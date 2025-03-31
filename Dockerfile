@@ -5,7 +5,8 @@ WORKDIR /workspace
 # Copy the Go Modules manifests and all third-party libraries that are unlikely to change frequently
 COPY go.mod go.mod
 COPY go.sum go.sum
-COPY vendor/ vendor/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 # Copy the go source
 COPY api/ api/
@@ -13,7 +14,9 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 
 # Build
-RUN CGO_ENABLED=0 GO111MODULE=on go build -a -o manager ./cmd/manager/main.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GO111MODULE=on go build -a -o manager ./cmd/manager/main.go
 
 # Copied from kubebuilder scaffold to run as nonroot at
 # https://github.com/kubernetes-sigs/kubebuilder/blob/7af89cb00c224c57ece37dc14ea37caf1eb769db/pkg/scaffold/v2/dockerfile.go#L60

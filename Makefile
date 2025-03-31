@@ -72,32 +72,27 @@ OS_NAME := $(shell go env GOOS)
 # `make` must be called from the HNC root, or all kinds of things will break
 # (starting with this).
 CURDIR = $(shell pwd)
-KUSTOMIZE ?= ${CURDIR}/hack/kustomize-3.8.1
 
-ifeq ($(OS_NAME),darwin)
-	KUSTOMIZE = $(shell which kustomize)
-endif
+GOBIN ?= ${CURDIR}/bin
 
-CONTROLLER_GEN ?= ${CURDIR}/bin/controller-gen
+KUSTOMIZE_VERSION ?= v5.3.0
+KUSTOMIZE ?= ${GOBIN}/kustomize
 
-STATICCHECK ?= ${CURDIR}/bin/staticcheck
+CONTROLLER_GEN_VERSION ?= v0.8.0
+CONTROLLER_GEN ?= ${GOBIN}/controller-gen
+
+STATICCHECK_VERSION ?= 2023.1
+STATICCHECK ?= ${GOBIN}/staticcheck
 
 # This really could be left blank, and setup-envtest would just download the
 # latest. But we may as well make it hermetic-ish by always downloading the
 # same version. I doubt the version matters much (or at all).
 ENVTEST_K8S_VERSION ?= 1.26.0
-SETUP_ENVTEST ?= ${CURDIR}/bin/setup-envtest
-
-# Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
-GOBIN ?= $(shell go env GOPATH)/bin
+SETUP_ENVTEST ?= ${GOBIN}/setup-envtest
 
 # Get check sum value of krew archive. Note that this value is only expanded
 # when the var is used.
 HNC_KREW_TAR_SHA256=$(shell sha256sum bin/kubectl-hns.tar.gz | cut -d " " -f 1)
-
-# The directories to run Go command on (excludes /vendor)
-DIRS=./api/... ./cmd/... ./internal/...
-GOFMT_DIRS=$(DIRS:/...=)
 
 all: test docker-build
 
@@ -108,7 +103,7 @@ test: build test-only
 
 test-only: build-setup-envtest
 	KUBEBUILDER_ASSETS="$(shell ${SETUP_ENVTEST} use ${ENVTEST_K8S_VERSION} --bin-dir ${CURDIR}/bin -p path)" \
-		go test ${DIRS} -coverprofile cover.out
+		go test ./... -coverprofile cover.out
 
 # Builds all binaries (manager and kubectl) and manifests
 build: generate fmt vet staticcheck manifests
@@ -156,17 +151,12 @@ run: build
 # files in /config (which should be checked into Git) as well as the kustomized
 # files in /manifest (which are not checked into Git).
 #
-# Ensure that everything from ${DIRS}, above, is in "paths" in the call to
-# controller-gen.  We can't say paths="./..." because that would include
-# hack/tools.go, which is a fake file used to ensure that CONTROLLER_GEN gets
-# vendored.
-#
 # We build the full manifest last so that the kustomization.yaml file is still
 # there in case you want to rerun it manually.
 manifests: build-controller-gen
 	@echo "Building manifests with image ${HNC_IMG}"
 	@# See the comment above about the 'paths' arguments
-	$(CONTROLLER_GEN) crd rbac:roleName=manager-role webhook paths="./api/..." paths="./cmd/..." paths="./internal/..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) crd rbac:roleName=manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	./hack/crd_patches/singleton-enum-patch.sh
 	-rm -rf manifests/
 	mkdir manifests
@@ -194,25 +184,24 @@ manifests: build-controller-gen
 fmt:
 	@echo "Go version (for logging posterity):"
 	@go version
-	gofmt -l -w ${GOFMT_DIRS}
+	gofmt -l -w ./
 
 # check-fmt: Checks gofmt/go fmt has been ran. gofmt -l lists files whose formatting differs from gofmt's, so it fails if there are unformatted go code.
 check-fmt:
-	@if [ $(shell gofmt -l ${GOFMT_DIRS} | wc -l ) != 0 ]; then \
+	@if [ $(shell gofmt -l ./ | wc -l ) != 0 ]; then \
 		echo "Error: there are unformatted go code, please run 'make fmt' before committing" && exit 1; \
 	fi
 
 # Run go vet against code
 vet:
-	go vet ${DIRS}
+	go vet ./...
 
 # Run staticcheck against code
 staticcheck: build-staticcheck
-	$(STATICCHECK) ${DIRS}
+	$(STATICCHECK) ./...
 
 build-staticcheck:
-	@echo "If this next step fails, try updating honnef.co/go/tools in go.mod"
-	go build -o $(STATICCHECK) honnef.co/go/tools/cmd/staticcheck
+	GOBIN=$(GOBIN) go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 
 # Generate code
 generate: build-controller-gen
@@ -223,13 +212,14 @@ check-generate: generate
   		echo "Error: generated files are out of sync, please run 'make generate' before committing" && git diff && exit 1; \
   	fi
 
-# Use the version of controller-gen that's checked into vendor/ (see
-# hack/tools.go to see how it got there).
 build-controller-gen:
-	go build -o $(CONTROLLER_GEN) sigs.k8s.io/controller-tools/cmd/controller-gen
+	GOBIN=$(GOBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 build-setup-envtest:
-	go build -o $(SETUP_ENVTEST) sigs.k8s.io/controller-runtime/tools/setup-envtest
+	GOBIN=$(GOBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+build-kustomize:
+	GOBIN=$(GOBIN) go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
 ###################### DEPLOYABLE ARTIFACTS AND ACTIONS #########################
 
