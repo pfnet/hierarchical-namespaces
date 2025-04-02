@@ -20,10 +20,10 @@ import (
 
 var _ = Describe("Scoped Hierarchical Resource Quota", Label("pfnet"), func() {
 	var (
-		parentNs, childNs, priorityName     string
-		cleanupNs, cleanupPriority     func()
-		scopeSelector corev1.ScopeSelector
-		normalHRQ api.HierarchicalResourceQuota
+		parentNs, childNs, priorityName string
+		cleanupNs, cleanupPriority      func()
+		scopeSelector                   corev1.ScopeSelector
+		normalHRQ                       api.HierarchicalResourceQuota
 	)
 
 	BeforeEach(func() {
@@ -78,8 +78,8 @@ var _ = Describe("Scoped Hierarchical Resource Quota", Label("pfnet"), func() {
 
 		MustRun("kubectl delete hrq -n", parentNs, hrq.Name)
 
-		RunShouldNotContain(rqName, propagationTime, "kubectl get resourcequota -n" , parentNs)
-		RunShouldNotContain(rqName, propagationTime, "kubectl get resourcequota -n" , childNs)
+		RunShouldNotContain(rqName, propagationTime, "kubectl get resourcequota -n", parentNs)
+		RunShouldNotContain(rqName, propagationTime, "kubectl get resourcequota -n", childNs)
 	})
 
 	It("should update the .status.used field of the HRQ when pods are created", func() {
@@ -117,7 +117,7 @@ func mustCreatePod(prefix, nsnm string) (corev1.Pod, error) {
 }
 
 func mustCreatePodWithPrioirty(prefix, nsnm, priority string) (corev1.Pod, error) {
-	name := prefix + "-" +  uuid.New().String()
+	name := prefix + "-" + uuid.New().String()
 	spec := corev1.PodSpec{
 		PriorityClassName: priority,
 		Containers: []corev1.Container{
@@ -131,7 +131,7 @@ func mustCreatePodWithPrioirty(prefix, nsnm, priority string) (corev1.Pod, error
 		spec.PriorityClassName = priority
 	}
 
-	pod := corev1.Pod {
+	pod := corev1.Pod{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Pod",
 			APIVersion: "v1",
@@ -164,7 +164,7 @@ func setScopedHRQ(nm, nsnm string, resourceList corev1.ResourceList, scopeSelect
 			Namespace: nsnm,
 		},
 		Spec: api.HierarchicalResourceQuotaSpec{
-			Hard: resourceList,
+			Hard:          resourceList,
 			ScopeSelector: scopeSelector,
 		},
 	}
@@ -183,7 +183,7 @@ func setUpParentAndChild() (string, string, func()) {
 	parentNs := createSubNS(rootNs, "parent-")
 	childNs := createSubNS(parentNs, "child-")
 	cleanup := func() {
-		MustRunWithTimeout(cleanupTimeout, "kubectl annotate ns", rootNs , "hnc.x-k8s.io/subnamespace-of-")
+		MustRunWithTimeout(cleanupTimeout, "kubectl annotate ns", rootNs, "hnc.x-k8s.io/subnamespace-of-")
 		MustRunWithTimeout(cleanupTimeout, "kubectl annotate ns", parentNs, "hnc.x-k8s.io/subnamespace-of-")
 		MustRunWithTimeout(cleanupTimeout, "kubectl annotate ns", childNs, "hnc.x-k8s.io/subnamespace-of-")
 		var wg sync.WaitGroup
@@ -225,9 +225,9 @@ func genPriorityScopeSelector() (corev1.ScopeSelector, string, func()) {
 	return corev1.ScopeSelector{
 		MatchExpressions: []corev1.ScopedResourceSelectorRequirement{
 			{
-				Operator: corev1.ScopeSelectorOpIn,
+				Operator:  corev1.ScopeSelectorOpIn,
 				ScopeName: "PriorityClass",
-				Values:   []string{priority},
+				Values:    []string{priority},
 			},
 		},
 	}, priority, cleanup

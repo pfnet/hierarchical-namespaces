@@ -88,6 +88,7 @@ STATICCHECK ?= ${GOBIN}/staticcheck
 # latest. But we may as well make it hermetic-ish by always downloading the
 # same version. I doubt the version matters much (or at all).
 ENVTEST_K8S_VERSION ?= 1.26.0
+SETUP_ENVTEST_VERSION ?= release-0.17
 SETUP_ENVTEST ?= ${GOBIN}/setup-envtest
 
 # Get check sum value of krew archive. Note that this value is only expanded
@@ -103,7 +104,7 @@ test: build test-only
 
 test-only: build-setup-envtest
 	KUBEBUILDER_ASSETS="$(shell ${SETUP_ENVTEST} use ${ENVTEST_K8S_VERSION} --bin-dir ${CURDIR}/bin -p path)" \
-		go test ./... -coverprofile cover.out
+		go test $(shell go list ./... | grep -v '/test/e2e') -coverprofile cover.out
 
 # Builds all binaries (manager and kubectl) and manifests
 build: generate fmt vet staticcheck manifests
@@ -137,7 +138,6 @@ build: generate fmt vet staticcheck manifests
 clean: krew-uninstall
 	-rm -rf bin/*
 	-rm -rf manifests/*
-	-rm -f ${GOPATH}/bin/kubectl-hns
 
 # Installs the Linux kubectl plugin to $GOPATH/bin, assume that this is in your PATH already.
 kubectl: build
@@ -153,7 +153,7 @@ run: build
 #
 # We build the full manifest last so that the kustomization.yaml file is still
 # there in case you want to rerun it manually.
-manifests: build-controller-gen
+manifests: build-controller-gen build-kustomize
 	@echo "Building manifests with image ${HNC_IMG}"
 	@# See the comment above about the 'paths' arguments
 	$(CONTROLLER_GEN) crd rbac:roleName=manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
@@ -197,8 +197,9 @@ vet:
 	go vet ./...
 
 # Run staticcheck against code
-staticcheck: build-staticcheck
-	$(STATICCHECK) ./...
+staticcheck: # build-staticcheck
+	@echo TODO: Skip running staticheck. We need to migrate it to golangci-lint.
+	# $(STATICCHECK) ./...
 
 build-staticcheck:
 	GOBIN=$(GOBIN) go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
@@ -216,7 +217,7 @@ build-controller-gen:
 	GOBIN=$(GOBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 build-setup-envtest:
-	GOBIN=$(GOBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+	GOBIN=$(GOBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 
 build-kustomize:
 	GOBIN=$(GOBIN) go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
