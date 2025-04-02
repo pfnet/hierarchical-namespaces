@@ -84,7 +84,6 @@ spec:
                       type: object
                     type: array
                 type: object
-                x-kubernetes-map-type: atomic
             type: object
           status:
             description: Status defines the actual enforced quota and its current

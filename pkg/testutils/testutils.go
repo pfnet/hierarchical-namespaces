@@ -154,8 +154,10 @@ func tryRunShouldContainMultiple(substrs []string, cmdln ...string) (string, err
 }
 
 // If any of the substrs are missing from teststring, returns a string of the form:
-//   did not output the expected substring(s): <string1>, <string2>, ...
-//   and instead output: teststring
+//
+//	did not output the expected substring(s): <string1>, <string2>, ...
+//	and instead output: teststring
+//
 // Otherwise returns the empty string.
 func missAny(substrs []string, teststring string) string {
 	var missing []string

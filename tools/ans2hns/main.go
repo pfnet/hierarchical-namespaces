@@ -11,8 +11,8 @@ import (
 )
 
 // nsInfo defines all the information we need to know about a namespace
-type nsInfo struct{
-	parent string
+type nsInfo struct {
+	parent    string
 	hasConfig bool
 }
 
@@ -112,7 +112,7 @@ func getNamespaces(path string) ([]string, error) {
 
 	// After stripping off the 'namespaces/' and the filename, what remains is the list of namespaces
 	// from root to leaf.
-	return segs[1:len(segs)-1], nil
+	return segs[1 : len(segs)-1], nil
 }
 
 // updateForest updates the inferred forest based on the directory components in the item's
@@ -196,7 +196,7 @@ spec:
   parent: %s`
 
 	for nm, ns := range forest {
-		if ns.hasConfig || ns.parent == ""{
+		if ns.hasConfig || ns.parent == "" {
 			// Don't generate configs if one already exists or for roots
 			continue
 		}
