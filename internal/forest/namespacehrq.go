@@ -135,7 +135,7 @@ func (n *Namespace) canUseResources(u v1.ResourceList, rqName RQName) error {
 			msg += fmt.Sprintf(", requested: %s=%v, used: %s=%v, limited: %s=%v",
 				rnm, &rq, rnm, &uq, rnm, &lq)
 		}
-		return fmt.Errorf(msg)
+		return errors.New(msg)
 	}
 
 	return nil
