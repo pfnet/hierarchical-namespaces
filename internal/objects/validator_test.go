@@ -681,7 +681,7 @@ type fakeNSClient struct {
 }
 
 // Get decodes given client.Object as corev1.Namespace that might contains deletionTimestamp
-func (c fakeNSClient) Get(_ context.Context, key client.ObjectKey, obj client.Object) error {
+func (c fakeNSClient) Get(_ context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	nsObj := obj.(*corev1.Namespace)
 	if c.isDeleting {
 		nsObj.DeletionTimestamp = &metav1.Time{Time: time.Now()}
@@ -715,6 +715,15 @@ func (fakeNSClient) RESTMapper() meta.RESTMapper {
 	return nil
 }
 func (fakeNSClient) Scheme() *runtime.Scheme {
+	return nil
+}
+func (fakeNSClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVersionKind, error) {
+	return schema.GroupVersionKind{}, nil
+}
+func (fakeNSClient) IsObjectNamespaced(_ runtime.Object) (bool, error) {
+	return false, nil
+}
+func (fakeNSClient) SubResource(_ string) client.SubResourceClient {
 	return nil
 }
 
