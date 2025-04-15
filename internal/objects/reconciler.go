@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
@@ -807,11 +808,11 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, maxReconciles int) error
 		// the default etcd timeout is 10s, which apparently is a more realistic measure of how K8s can
 		// behave under heavy load, so I raised it to 10s during the PR review. The _average_ delay seen
 		// by users should still be about 5s though.
-		RateLimiter: workqueue.NewItemExponentialFailureRateLimiter(250*time.Millisecond, 10*time.Second),
+		RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](250*time.Millisecond, 10*time.Second),
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(target).
-		Watches(&source.Channel{Source: r.Affected}, &handler.EnqueueRequestForObject{}).
+		WatchesRawSource(source.Channel(r.Affected, &handler.EnqueueRequestForObject{})).
 		WithOptions(opts).
 		Complete(r)
 }
