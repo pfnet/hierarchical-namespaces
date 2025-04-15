@@ -47,7 +47,7 @@ type Validator struct {
 	Log     logr.Logger
 	Forest  *forest.Forest
 	client  client.Client
-	decoder *admission.Decoder
+	decoder admission.Decoder
 }
 
 type request struct {
@@ -423,7 +423,7 @@ func (v *Validator) InjectClient(c client.Client) error {
 	return nil
 }
 
-func (v *Validator) InjectDecoder(d *admission.Decoder) error {
+func (v *Validator) InjectDecoder(d admission.Decoder) error {
 	v.decoder = d
 	return nil
 }
