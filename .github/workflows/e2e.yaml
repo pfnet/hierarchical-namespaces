@@ -24,31 +24,5 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version-file: 'go.mod'
-    - name: Install ginkgo
-      run: go install github.com/onsi/ginkgo/v2/ginkgo@v2.1.4 # This is aligned with the version in go.mod
-    - name: Install kind
-      run: curl -Lo kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64 && chmod +x kind && sudo mv kind /usr/local/bin/
-      env:
-        KIND_VERSION: v0.27.0
-    - name: Install krew
-      run: |
-        set -x; cd "$(mktemp -d)" &&
-        OS="$(uname | tr '[:upper:]' '[:lower:]')" &&
-        ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" &&
-        KREW="krew-${OS}_${ARCH}" &&
-        curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/download/${KREW_VERSION}/${KREW}.tar.gz" &&
-        tar zxvf "${KREW}.tar.gz" &&
-        ./"${KREW}" install krew
-        echo "$HOME/.krew/bin" >> $GITHUB_PATH
-      env:
-        KREW_VERSION: v0.4.5
-    - name: Install the hnc subcommand
-      run: make krew-install
-      env:
-        HNC_IMG_TAG: v0.0.0-dev # krew has the strict rule for the plugin's version.
-    - name: Deploy HRQ to the kind cluster
-      run: make kind-reboot deploy-hrq
-      env:
-        CONFIG: kind
-    - name: make test-pfnet-e2e-parallel
+    - name: make test-e2e
       run: make test-e2e
