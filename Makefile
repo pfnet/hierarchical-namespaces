@@ -78,7 +78,7 @@ GOBIN ?= ${CURDIR}/bin
 KUSTOMIZE_VERSION ?= v5.3.0
 KUSTOMIZE ?= ${GOBIN}/kustomize
 
-CONTROLLER_GEN_VERSION ?= v0.8.0
+CONTROLLER_GEN_VERSION ?= v0.12.0
 CONTROLLER_GEN ?= ${GOBIN}/controller-gen
 
 STATICCHECK_VERSION ?= 2023.1
@@ -329,12 +329,7 @@ kind-deploy:
 # HNC_FOCUS=Quickstart make test-e2e # Runs all tests in the "Quickstart" Describe block
 .PHONY: test-e2e
 test-e2e: warn-hnc-repair
-	go clean -testcache
-ifndef HNC_FOCUS
-	go test -v -timeout 0 ./test/e2e/...
-else
-	go test -v -timeout 0 ./test/e2e/... -args --ginkgo.focus ${HNC_FOCUS}
-endif
+	./hack/local-run-e2e.sh
 
 # This batch test will run e2e tests N times on the current cluster the user
 # deployed (either kind or a kubernetes cluster), e.g. "make test-e2e-batch N=10"
@@ -343,16 +338,12 @@ test-e2e-batch: warn-hnc-repair
 	number=1 ; while [[ $$number -le $N ]] ; do \
 		echo $$number ; \
     ((number = number + 1)) ; \
-		go clean -testcache ; \
-		go test -v -timeout 0 ./test/e2e/... ; \
+		./hack/local-run-e2e.sh
 	done
 
 PHONY: test-pfnet-e2e-parallel
 test-pfnet-e2e-parallel:
-	kind get kubeconfig --name kind > /tmp/kind-hnc-config
-	export KUBECONFIG=/tmp/kind-hnc-config && kubectl -n hnc-system patch deployment hnc-controller-manager -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","resources":{"limits":{"cpu":null}}}]}}}}'
-	export KUBECONFIG=/tmp/kind-hnc-config && kubectl -n hnc-system wait --for=condition=available deployment/hnc-controller-manager --timeout=5m
-	export KUBECONFIG=/tmp/kind-hnc-config && ginkgo run -p --label-filter pfnet ./test/e2e/...
+	./hack/local-run-e2e.sh --pfnet
 
 # This will *only* run a small number of tests (specifically, the quickstarts). You can run this when you're fairly confident that
 # everything will work, but be sure to watch for the postsubmits and periodic tests to ensure they pass too.

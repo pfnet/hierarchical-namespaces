@@ -8,6 +8,9 @@ on:
     types: [opened, synchronize]
     paths-ignore: ['**.md']
 
+env:
+  KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT: 120s
+
 jobs:
   run:
     runs-on: ubuntu-latest
