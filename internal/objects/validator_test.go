@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -36,7 +37,8 @@ func TestType(t *testing.T) {
 	f := forest.NewForest()
 	f.AddTypeSyncer(r)
 	l := zap.New()
-	v := &Validator{Forest: f, Log: l}
+	decoder := admission.NewDecoder(scheme.Scheme)
+	v := &Validator{Forest: f, Log: l, decoder: decoder}
 	config.SetNamespaces("", "kube-system")
 
 	tests := []struct {
