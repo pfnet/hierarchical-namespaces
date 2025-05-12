@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -797,6 +798,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, maxReconciles int) error
 	target.SetGroupVersionKind(r.GVK)
 	opts := controller.Options{
 		MaxConcurrentReconciles: maxReconciles,
+		SkipNameValidation:      ptr.To(true),
 
 		// Unlike the other HNC reconcilers, the object reconciler can easily be affected by objects
 		// that do not directly cause reconciliations when they're modified - see, e.g.,
