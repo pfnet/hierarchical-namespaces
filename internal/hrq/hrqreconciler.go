@@ -200,16 +200,17 @@ func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalR
 	requestColumn := bytes.NewBuffer([]byte{})
 	limitColumn := bytes.NewBuffer([]byte{})
 	for i := range resources {
-		w := requestColumn
 		resource := resources[i]
-		usedQuantity := inst.Status.Used[resource]
-		hardQuantity := inst.Status.Hard[resource]
 
-		// use limitColumn writer if a resource name prefixed with "limits" is found
+		var w *bytes.Buffer
 		if pieces := strings.Split(resource.String(), "."); len(pieces) > 1 && pieces[0] == "limits" {
 			w = limitColumn
+		} else {
+			w = requestColumn
 		}
 
+		usedQuantity := inst.Status.Used[resource]
+		hardQuantity := inst.Status.Hard[resource]
 		fmt.Fprintf(w, "%s: %s/%s, ", resource, usedQuantity.String(), hardQuantity.String())
 	}
 
