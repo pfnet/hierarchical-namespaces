@@ -92,6 +92,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) {
 			Forest: f,
 		}
 		handler.InjectDecoder(decoder)
+		handler.InjectConfig(mgr.GetConfig())
 		mgr.GetWebhookServer().Register(hncconfig.ServingPath, &webhook.Admission{Handler: handler})
 	}
 
