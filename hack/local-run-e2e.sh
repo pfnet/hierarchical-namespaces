@@ -91,6 +91,7 @@ if [ "${PFNET_MODE}" = true ]; then
 	kubectl -n hnc-system wait --for=condition=available deployment/hnc-controller-manager --timeout=5m
 	ginkgo run -p --label-filter pfnet ./test/e2e/...
 else 
+	kubectl -n hnc-system wait --for=condition=available deployment/hnc-controller-manager --timeout=5m
 	go clean -testcache
 	if [ -z "${HNC_FOCUS+x}" ]; then
 		echo "Running all e2e tests..."
