@@ -2,6 +2,7 @@ version: 2
 before:
   hooks:
   - go mod download
+  - bash -eux -o pipefail -c "mkdir -p releases; cd config/variants/hrq; kustomize edit set image controller=ghcr.io/pfnet/{{ .ProjectName }}:{{ .Version }}; kustomize build . > ../../../releases/hrq.yaml"
 builds:
 - id: manager
   env:
@@ -19,6 +20,9 @@ builds:
   - -a
   ldflags:
   - -s -w -X github.com/pfnet/hierarchical-namespaces/cmd.Version={{.Version}} -X github.com/pfnet/hierarchical-namespaces/cmd.Revision={{.ShortCommit}} -extldflags "-static"
+release:
+  extra_files:
+    - glob: "releases/hrq.yaml"
 
 dockers:
 - image_templates: ["ghcr.io/pfnet/{{ .ProjectName }}:{{ .Version }}-amd64"]
