@@ -27,7 +27,7 @@ const (
 
 type Mutator struct {
 	Log     logr.Logger
-	decoder *admission.Decoder
+	decoder admission.Decoder
 }
 
 // Handle implements the mutating webhook.
@@ -67,7 +67,7 @@ func (m *Mutator) handle(log logr.Logger, ns *corev1.Namespace) {
 }
 
 // InjectDecoder injects the decoder.
-func (m *Mutator) InjectDecoder(d *admission.Decoder) error {
+func (m *Mutator) InjectDecoder(d admission.Decoder) error {
 	m.decoder = d
 	return nil
 }

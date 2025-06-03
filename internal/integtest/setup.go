@@ -31,12 +31,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	// +kubebuilder:scaffold:imports
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
-	"sigs.k8s.io/hierarchical-namespaces/internal/config"
 	"sigs.k8s.io/hierarchical-namespaces/internal/forest"
 	"sigs.k8s.io/hierarchical-namespaces/internal/setup"
 )
@@ -95,9 +95,15 @@ func HNCBeforeSuite() {
 
 	By("creating manager")
 	k8sManager, err := ctrl.NewManager(cfg, ctrl.Options{
-		NewClient:          config.NewClient(false),
-		MetricsBindAddress: "0", // disable metrics serving since 'go test' runs multiple suites in parallel processes
-		Scheme:             scheme.Scheme,
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				Unstructured: true,
+			},
+		},
+		Metrics: server.Options{
+			BindAddress: "0",
+		},
+		Scheme: scheme.Scheme,
 	})
 	Expect(err).ToNot(HaveOccurred())
 

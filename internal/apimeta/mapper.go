@@ -31,7 +31,12 @@ func IsNotNamespacedError(err error) bool {
 }
 
 func NewGroupKindMapper(c *rest.Config) (*GroupKindMapper, error) {
-	restMapper, err := apiutil.NewDynamicRESTMapper(c)
+	httpClient, err := rest.HTTPClientFor(c)
+	if err != nil {
+		return nil, err
+	}
+
+	restMapper, err := apiutil.NewDynamicRESTMapper(c, httpClient)
 	if err != nil {
 		return nil, err
 	}
