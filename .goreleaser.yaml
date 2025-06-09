@@ -20,9 +20,39 @@ builds:
   - -a
   ldflags:
   - -s -w -X github.com/pfnet/hierarchical-namespaces/cmd.Version={{.Version}} -X github.com/pfnet/hierarchical-namespaces/cmd.Revision={{.ShortCommit}} -extldflags "-static"
+- id: kubectl-hns
+  env:
+  - CGO_ENABLED=0
+  - GO111MODULE=on
+  main: ./cmd/kubectl/main.go
+  binary: kubectl-hns
+  goos:
+  - linux
+  - darwin
+  - windows
+  goarch:
+  - amd64
+  - arm64
+  flags:
+  - -a
+  ldflags:
+  - -s -w -X github.com/pfnet/hierarchical-namespaces/internal/version.Version={{.Version}} -extldflags "-static"
+
+archives:
+- id: manager
+  ids: # builds IDs
+  - manager
+  name_template: 'hnc-manager_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}'
+- id: kubectl-hns
+  ids: # builds IDs
+  - kubectl-hns
+  name_template: 'kubectl-hns_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}'
+
 release:
   extra_files:
     - glob: "releases/hrq.yaml"
+    - glob: "dist/krew/hns.yaml"
+      name_template: 'kubectl-hns.krew.yaml'
 
 dockers:
 - image_templates: ["ghcr.io/pfnet/{{ .ProjectName }}:{{ .Version }}-amd64"]
@@ -61,3 +91,37 @@ docker_manifests:
   image_templates:
   - ghcr.io/pfnet/{{ .ProjectName }}:{{ .Version }}-amd64
   - ghcr.io/pfnet/{{ .ProjectName }}:{{ .Version }}-arm64v8
+
+krews:
+- name: hns
+  ids: # archives IDs
+  - kubectl-hns
+  short_description: Manage hierarchical namespaces (part of HNC)
+  skip_upload: true
+  description: |
+    Manipulates hierarchical namespaces provided by the Hierarchical Namespace
+    Controller (HNC).
+
+    HNC allows you to arrange your namespaces into hierarchies, which enables
+    two key benefits:
+    * Owners of parent namespaces can create policies that are enforced on
+      all descendant namespaces.
+    * Users without cluster-level permissions to create namespaces can create
+      restricted "subnamespaces" instead.
+
+    HNC is controlled via regular Kubernetes objects, but this plugin makes it
+    easy to create subnamespaces, arrange regular (full) namespaces into
+    hierarchies, and configure HNC to propagate different kinds of objects.
+  caveats: |
+    This plugin works best if you have the most recent minor version of HNC on
+    your cluster. Get the latest version of HNC, as well as prior versions of
+    this plugin, at:
+
+      https://github.com/pfnet/hierarchical-namespaces
+
+    Watch out for the following common misconceptions when using HNC:
+
+    * Not all child namespaces are subnamespaces!
+    * Only RBAC Roles and RoleBindings are propagated by default, but you can configure more.
+
+    The user guide contains much more information.
