@@ -16,28 +16,6 @@ ifneq ($(KIND),"")
   CONFIG = kind
 endif
 
-# The GCP project ID useful to have when performing operations that require one
-# (e.g. release). If you don't have gcloud, all other operations in this
-# makefile should still succeed.
-#
-# We use simple expansion to prevent this from being called every time we need
-# the project ID. gcloud prints some noise to stderr, hence the redirect.
-PROJECT_ID := ${shell gcloud config get-value project 2>/dev/null}
-
-# The registry is the location of the image to be built, if any:
-#
-# * If you are building locally (e.g. 'make deploy'), this is where the image
-#   will be pushed after it is built, and what the manifest files will use.
-# * If you are releasing HNC, this is where the *temporary* image will be
-#   built. The *final* image will be in HNC_RELEASE_REGISTRY.
-#
-# By default, we use the Container Registry in the current GCP project, but you
-# can set it to anything, UNLESS you are calling 'make release' since the image
-# needs to be built in the same project as the GCB instance that builds it.
-ifdef PROJECT_ID
-  HNC_REGISTRY ?= gcr.io/${PROJECT_ID}
-endif
-
 # The image name is the *base* name - excluding the registry and the tag.
 HNC_IMG_NAME ?= hnc-manager
 
@@ -375,88 +353,10 @@ endif
 	@sleep 3
 
 ###################### RELEASE ACTIONS #########################
-# Build the container image by Cloud Build and build YAMLs locally
-HNC_RELEASE_REGISTRY ?= gcr.io/k8s-staging-multitenancy
-HNC_RELEASE_IMG = ${HNC_RELEASE_REGISTRY}/${HNC_IMG_NAME}:${HNC_IMG_TAG}
-# Override this to release from a different Git repo
-HNC_RELEASE_REPO_OWNER ?= kubernetes-sigs
-
-HNC_GCB_SUBS := _HNC_REGISTRY=${HNC_RELEASE_REGISTRY}
-HNC_GCB_SUBS := ${HNC_GCB_SUBS},_HNC_IMG_NAME=${HNC_IMG_NAME}
-HNC_GCB_SUBS := ${HNC_GCB_SUBS},_HNC_IMG_TAG=${HNC_IMG_TAG}
-HNC_GCB_SUBS := ${HNC_GCB_SUBS},_HNC_USER=${HNC_USER}
-HNC_GCB_SUBS := ${HNC_GCB_SUBS},_HNC_PERSONAL_ACCESS_TOKEN=${HNC_PAT}
-HNC_GCB_SUBS := ${HNC_GCB_SUBS},_HNC_RELEASE_ID=${HNC_RELEASE_ID}
-HNC_GCB_SUBS := ${HNC_GCB_SUBS},_HNC_REPO_OWNER=${HNC_RELEASE_REPO_OWNER}
-release: check-release-env
-	@echo "*********************************************"
-	@echo "*********************************************"
-	@echo "Releasing ${HNC_RELEASE_IMG}"
-	@echo "... override with HNC_RELEASE_REGISTRY, HNC_IMG_NAME and"
-	@echo "... HNC_IMG_TAG."
-	@echo "Pulling from Github hierarchical-namespaces repo owned by ${HNC_RELEASE_REPO_OWNER}"
-	@echo "... override with HNC_RELEASE_REPO_OWNER"
-	@echo "GCP project: ${PROJECT_ID} (obtained from gcloud)"
-	@echo "Temporary build image (must be in ${PROJECT_ID}): ${HNC_IMG}"
-	@echo "Any existing images with the same tag will be overwritten!"
-	@echo ""
-ifeq (${HNC_FORCE_RELEASE}, true)
-	@echo "HNC_FORCE_RELEASE IS ENABLED. YOU WILL PROBABLY BE OVERWRITING"
-	@echo "AN EXISTING RELEASE. ARE YOU REALLY SURE ABOUT THIS????"
-	@sleep 1
-	@echo ""
-endif
-	@echo "YOU HAVE FIVE SECONDS TO CANCEL"
-	@echo "*********************************************"
-	@echo "*********************************************"
-	@sleep 5
-	@echo
-	@echo "*********************************************"
-	@echo "*********************************************"
-	@echo "Starting build."
-	@echo "*********************************************"
-	@echo "*********************************************"
-	gcloud builds submit --config cloudbuild.yaml --no-source --substitutions=${HNC_GCB_SUBS} --timeout=60m
-	@echo "*********************************************"
-	@echo "*********************************************"
-	@echo "Pushing ${HNC_IMG} to ${HNC_RELEASE_IMG}"
-	@echo "*********************************************"
-	@echo "*********************************************"
-	@docker pull ${HNC_IMG}
-	@docker tag ${HNC_IMG} ${HNC_RELEASE_IMG}
-	@docker push ${HNC_RELEASE_IMG}
-
-# Set up error checking variables
-ERR_MSG=Ensure that HNC_IMG_TAG (eg v0.1.0), HNC_USER (your Github username), HNC_PAT (Github personal access token) and HNC_RELEASE_ID (Github numeric ID) are set
-# During a release, We don't want to overwrite an existing docker image and tag
-# so we query the repository to see if the image already exists. This can be
-# overridden by setting HNC_FORCE_RELEASE=true
-ifeq ($(HNC_FORCE_RELEASE), true)
-	COULDNT_READ_RELEASE_IMG=1
-else
-	COULDNT_READ_RELEASE_IMG=$(shell gcloud container images describe $(HNC_RELEASE_IMG) > /dev/null 2>&1; echo $$?)
-endif
-
-# Actual error checking:
-check-release-env:
-ifndef HNC_IMG_TAG
-	$(error HNC_IMG_TAG is undefined, should be vX.X.X; ${ERR_MSG})
-endif
-ifndef HNC_USER
-	$(error HNC_USER is undefined; ${ERR_MSG})
-endif
-ifndef HNC_PAT
-	$(error HNC_PAT is undefined; ${ERR_MSG})
-endif
-ifndef HNC_RELEASE_ID
-	$(error HNC_RELEASE_ID is undefined; ${ERR_MSG})
-endif
-ifeq ($(COULDNT_READ_RELEASE_IMG), 0)
-	$(error The image ${HNC_RELEASE_IMG} already exists. Force and overwrite this image by using HNC_FORCE_RELEASE=true)
-endif
 
 # Generate the Krew manifest and put it in manifests/. Note that 'manifests' must exist because
 # krew-build calls krew-tar calls build calls manifests.
+HNC_RELEASE_REPO_OWNER ?= pfnet
 krew-build: krew-tar
 	cp hack/krew-kubectl-hns.yaml manifests/krew-kubectl-hns.yaml
 	sed -i 's/HNC_KREW_TAR_SHA256/${HNC_KREW_TAR_SHA256}/' manifests/krew-kubectl-hns.yaml
