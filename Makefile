@@ -454,3 +454,25 @@ endif
 ifeq ($(COULDNT_READ_RELEASE_IMG), 0)
 	$(error The image ${HNC_RELEASE_IMG} already exists. Force and overwrite this image by using HNC_FORCE_RELEASE=true)
 endif
+
+# Generate the Krew manifest and put it in manifests/. Note that 'manifests' must exist because
+# krew-build calls krew-tar calls build calls manifests.
+krew-build: krew-tar
+	cp hack/krew-kubectl-hns.yaml manifests/krew-kubectl-hns.yaml
+	sed -i 's/HNC_KREW_TAR_SHA256/${HNC_KREW_TAR_SHA256}/' manifests/krew-kubectl-hns.yaml
+	sed -i 's/HNC_IMG_TAG/${HNC_IMG_TAG}/' manifests/krew-kubectl-hns.yaml
+	sed -i 's/HNC_RELEASE_REPO_OWNER/${HNC_RELEASE_REPO_OWNER}/' manifests/krew-kubectl-hns.yaml
+
+# This needs to be separate from krew-build so that the HNC_KREW_TAR_SHA256 env
+# var can be evaluated before the recipe starts running.
+krew-tar: build
+	cp LICENSE bin/kubectl
+	tar -zcvf bin/kubectl-hns.tar.gz bin/kubectl
+
+# Install kubectl plugin locally using krew.
+krew-install: krew-build
+	kubectl krew install --manifest=manifests/krew-kubectl-hns.yaml --archive=bin/kubectl-hns.tar.gz
+
+# Uninstall kubectl plugin locally using krew.
+krew-uninstall:
+	-kubectl krew uninstall hns
