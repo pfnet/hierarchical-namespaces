@@ -52,7 +52,7 @@ release:
   extra_files:
     - glob: "releases/hrq.yaml"
     - glob: "dist/krew/hns.yaml"
-      name_template: 'kubectl-hns.krew.yaml'
+      name_template: 'kubectl-hns_{{ .Version }}.krew.yaml'
 
 dockers:
 - image_templates: ["ghcr.io/pfnet/{{ .ProjectName }}:{{ .Version }}-amd64"]
