@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/core/v1"
@@ -83,6 +84,12 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	isSingleton := utils.IsSingletonRQ(inst)
+	isLegacyScoped := utils.IsLegacyScopedRQ(inst)
+
+	// Handle migration from legacy scoped RQ to new format
+	if !notFound && isLegacyScoped {
+		return r.migrateLegacyScopedRQ(ctx, log, inst)
+	}
 
 	r.Forest.Lock()
 	ns := r.Forest.Get(inst.ObjectMeta.Namespace)
@@ -355,4 +362,88 @@ func (r *ResourceQuotaReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1.ResourceQuota{}).
 		WatchesRawSource(source.Channel(r.trigger, &handler.EnqueueRequestForObject{})).
 		Complete(r)
+}
+
+// migrateLegacyScopedRQ handles migration from legacy scoped RQ format to new format
+func (r *ResourceQuotaReconciler) migrateLegacyScopedRQ(ctx context.Context, log logr.Logger, legacyRQ *v1.ResourceQuota) (ctrl.Result, error) {
+	// Double-check that this is actually an HNC-managed legacy RQ
+	if !utils.IsHNCManagedRQ(legacyRQ) {
+		log.Info("Skipping migration for non-HNC managed RQ", "rqName", legacyRQ.Name)
+		return ctrl.Result{}, nil
+	}
+
+	// Extract HRQ name from legacy RQ name
+	hrqName, err := utils.HRQNameFromLegacyRQName(legacyRQ.Name)
+	if err != nil {
+		log.Error(err, "Failed to extract HRQ name from legacy RQ", "rqName", legacyRQ.Name)
+		return ctrl.Result{}, err
+	}
+
+	// Find the corresponding HRQ in current namespace or ancestors
+	hrq, err := r.findHRQForMigration(ctx, log, legacyRQ.Namespace, hrqName)
+	if err != nil {
+		log.Error(err, "Failed to find HRQ for migration", "hrqName", hrqName)
+		return ctrl.Result{}, err
+	}
+
+	if hrq == nil {
+		// No corresponding HRQ found, delete the legacy RQ
+		log.Info("No corresponding HRQ found, deleting legacy RQ", "rqName", legacyRQ.Name)
+		return ctrl.Result{}, r.deleteRQ(ctx, log, legacyRQ)
+	}
+
+	// Generate new RQ name
+	newRQName, err := utils.ScopedRQName(hrq.Namespace, hrq.Name)
+	if err != nil {
+		log.Error(err, "Failed to generate new RQ name")
+		return ctrl.Result{}, err
+	}
+
+	// Check if new RQ already exists
+	_, err = r.getRQ(ctx, legacyRQ.Namespace, newRQName)
+	if err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "Failed to check new RQ existence")
+		return ctrl.Result{}, err
+	}
+
+	if apierrors.IsNotFound(err) {
+		// New RQ doesn't exist yet - the normal reconcile process will create it
+		// Requeue after a short delay to check again
+		log.Info("New format RQ not yet created, requeuing for retry", "legacyName", legacyRQ.Name, "expectedNewName", newRQName)
+		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+	}
+
+	// New RQ exists, safe to delete legacy RQ
+	log.Info("New format RQ exists, deleting legacy RQ", "legacyName", legacyRQ.Name, "newName", newRQName)
+	return ctrl.Result{}, r.deleteRQ(ctx, log, legacyRQ)
+}
+
+// findHRQForMigration finds the HRQ that corresponds to the legacy RQ
+func (r *ResourceQuotaReconciler) findHRQForMigration(ctx context.Context, log logr.Logger, namespace, hrqName string) (*api.HierarchicalResourceQuota, error) {
+	r.Forest.Lock()
+	ns := r.Forest.Get(namespace)
+	ancestryNames := ns.AncestryNames()
+	r.Forest.Unlock()
+
+	// Check current namespace first, then ancestors
+	namespaces := []string{namespace}
+	namespaces = append(namespaces, ancestryNames...)
+
+	for _, nsnm := range namespaces {
+		hrq := &api.HierarchicalResourceQuota{}
+		hrqKey := types.NamespacedName{Namespace: nsnm, Name: hrqName}
+
+		err := r.Get(ctx, hrqKey, hrq)
+		if err == nil && hrq.Spec.ScopeSelector != nil {
+			// Found scoped HRQ
+			log.Info("Found HRQ for migration", "hrqNamespace", nsnm, "hrqName", hrqName)
+			return hrq, nil
+		}
+
+		if err != nil && !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("error checking HRQ %s/%s: %w", nsnm, hrqName, err)
+		}
+	}
+
+	return nil, nil
 }
