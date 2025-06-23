@@ -105,33 +105,18 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, r.deleteRQ(ctx, log, inst)
 	} else if !isSingleton && notFound {
 		hrq := &api.HierarchicalResourceQuota{}
-		hrqName, err := utils.ScopedHRQNameFromHRQName(inst.Name)
+		hrqnnm, err := utils.ScopedHRQNameFromRQName(inst.Name)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("while getting hrq name: %w", err)
 		}
 
-		cursorNm := ns
-		var found bool
-		for {
-			if cursorNm == nil {
-				break
-			}
-
-			hrqnnm := types.NamespacedName{Namespace: cursorNm.Name(), Name: hrqName}
-			err := r.Get(ctx, hrqnnm, hrq)
-			if err == nil {
-				found = true
-				break
-			}
+		err = r.Get(ctx, hrqnnm, hrq)
+		if err != nil {
 			if apierrors.IsNotFound(err) {
-				cursorNm = cursorNm.Parent()
-				continue
+				return ctrl.Result{}, fmt.Errorf("the parent hrq not found: %s", hrqnnm)
+			} else {
+				return ctrl.Result{}, fmt.Errorf("getting hrq %s: %w", hrqnnm, err)
 			}
-
-			return ctrl.Result{}, fmt.Errorf("while getting hrq: %w", err)
-		}
-		if !found {
-			return ctrl.Result{}, fmt.Errorf("the parent hrq not found: %s", hrqName)
 		}
 
 		log.Info("Found the parent HRQ", "namespace", hrq.Namespace, "name", hrq.Name)

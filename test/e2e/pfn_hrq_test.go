@@ -58,23 +58,25 @@ var _ = Describe("Scoped Hierarchical Resource Quota", Label("pfnet"), func() {
 	})
 
 	It("should create RQs with correct limits in the descendants (including itself) for Scoped HRQs", func() {
-		hrqA := setScopedHRQ("a-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
-		hrqB := setScopedHRQ("b-hrq", childNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")}, &scopeSelector)
+		hrqA := setScopedHRQ("same-name-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
+		hrqB := setScopedHRQ("same-name-hrq", childNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")}, &scopeSelector)
 
-		rqAName := api.ResourceQuotaSingletonName + "-" + hrqA.Name
-		rqBName := api.ResourceQuotaSingletonName + "-" + hrqB.Name
+		rqAName := api.ResourceQuotaSingletonName + "-" + parentNs + "--" + hrqA.Name
+		rqBName := api.ResourceQuotaSingletonName + "-" + childNs + "--" + hrqB.Name
 
 		FieldShouldContain("resourcequota", parentNs, rqAName, ".spec.hard", "pods:3")
+		FieldShouldContain("resourcequota", childNs, rqAName, ".spec.hard", "pods:3")
 		FieldShouldContain("resourcequota", childNs, rqBName, ".spec.hard", "pods:2")
 
 		expect := selectorStr(priorityName)
 		FieldShouldContain("resourcequota", parentNs, rqAName, ".spec.scopeSelector", expect)
+		FieldShouldContain("resourcequota", childNs, rqAName, ".spec.scopeSelector", expect)
 		FieldShouldContain("resourcequota", childNs, rqBName, ".spec.scopeSelector", expect)
 	})
 
 	It("should remove obsolete (empty) RQ if there's no longer a Scoped HRQ in the ancestor", func() {
 		hrq := setScopedHRQ("a-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
-		rqName := api.ResourceQuotaSingletonName + "-" + hrq.Name
+		rqName := api.ResourceQuotaSingletonName + "-" + parentNs + "--" + hrq.Name
 
 		MustRun("kubectl delete hrq -n", parentNs, hrq.Name)
 
