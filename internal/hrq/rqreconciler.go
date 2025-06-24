@@ -305,65 +305,6 @@ func (r *ResourceQuotaReconciler) syncResourceLimits(ns *forest.Namespace, inst 
 	return true
 }
 
-// OnChangeNamespace enqueues the singleton in a specific namespace to trigger the reconciliation of
-// the singleton for a given reason .  This occurs in a goroutine so the caller doesn't block; since
-// the reconciler is never garbage-collected, this is safe.
-func (r *ResourceQuotaReconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
-	for _, nm := range ns.RQNames() {
-		r.OnChangeNamespaceWithRQName(log, ns, nm)
-	}
-}
-
-func (r *ResourceQuotaReconciler) OnChangeNamespaceWithRQName(log logr.Logger, ns *forest.Namespace, name string) {
-	nsnm := ns.Name()
-	go func() {
-		// The watch handler doesn't care about anything except the metadata.
-		inst := &v1.ResourceQuota{}
-		inst.ObjectMeta.Name = name
-		inst.ObjectMeta.Namespace = nsnm
-		r.trigger <- event.GenericEvent{Object: inst}
-	}()
-}
-
-// EnqueueSubtree enqueues ResourceQuota objects of the given namespace and its descendants.
-//
-// The method is robust against race conditions. The method holds the forest lock so that the
-// in-memory forest (specifically the descendants of the namespace that we record in-memory) cannot
-// be changed while enqueueing ResourceQuota objects in the namespace and its descendants.
-//
-// If a new namespace becomes a descendant just after we acquire the lock, the ResourceQuota object
-// in the new namespace will be enqueued by the NamespaceReconciler, instead of the
-// ResourceQuotaReconciler. By contrast, if a namespace is *removed* as a descendant, we'll still
-// call the reconciler but it will have no effect (reconcilers can safely be called multiple times,
-// even if the object has been deleted).
-func (r *ResourceQuotaReconciler) EnqueueSubtree(log logr.Logger, nsnm, name string, deleted bool) {
-	r.Forest.Lock()
-	defer r.Forest.Unlock()
-
-	nsnms := r.Forest.Get(nsnm).DescendantNames()
-	nsnms = append(nsnms, nsnm)
-	for _, nsnm := range nsnms {
-		ns := r.Forest.Get(nsnm)
-		if !deleted {
-			if _, ok := ns.GetQuota(name); !ok {
-				ns.SetQuota(name)
-			}
-		}
-		r.OnChangeNamespaceWithRQName(log, ns, name)
-	}
-}
-
-func (r *ResourceQuotaReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// This field will be shown as source.component=hnc.x-k8s.io in events.
-	r.eventRecorder = mgr.GetEventRecorderFor(api.MetaGroup)
-	r.trigger = make(chan event.GenericEvent)
-
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&v1.ResourceQuota{}).
-		WatchesRawSource(source.Channel(r.trigger, &handler.EnqueueRequestForObject{})).
-		Complete(r)
-}
-
 // migrateLegacyScopedRQ handles migration from legacy scoped RQ format to new format
 func (r *ResourceQuotaReconciler) migrateLegacyScopedRQ(ctx context.Context, log logr.Logger, legacyRQ *v1.ResourceQuota) (ctrl.Result, error) {
 	// Double-check that this is actually an HNC-managed legacy RQ
@@ -446,4 +387,63 @@ func (r *ResourceQuotaReconciler) findHRQForMigration(ctx context.Context, log l
 	}
 
 	return nil, nil
+}
+
+// OnChangeNamespace enqueues the singleton in a specific namespace to trigger the reconciliation of
+// the singleton for a given reason .  This occurs in a goroutine so the caller doesn't block; since
+// the reconciler is never garbage-collected, this is safe.
+func (r *ResourceQuotaReconciler) OnChangeNamespace(log logr.Logger, ns *forest.Namespace) {
+	for _, nm := range ns.RQNames() {
+		r.OnChangeNamespaceWithRQName(log, ns, nm)
+	}
+}
+
+func (r *ResourceQuotaReconciler) OnChangeNamespaceWithRQName(log logr.Logger, ns *forest.Namespace, name string) {
+	nsnm := ns.Name()
+	go func() {
+		// The watch handler doesn't care about anything except the metadata.
+		inst := &v1.ResourceQuota{}
+		inst.ObjectMeta.Name = name
+		inst.ObjectMeta.Namespace = nsnm
+		r.trigger <- event.GenericEvent{Object: inst}
+	}()
+}
+
+// EnqueueSubtree enqueues ResourceQuota objects of the given namespace and its descendants.
+//
+// The method is robust against race conditions. The method holds the forest lock so that the
+// in-memory forest (specifically the descendants of the namespace that we record in-memory) cannot
+// be changed while enqueueing ResourceQuota objects in the namespace and its descendants.
+//
+// If a new namespace becomes a descendant just after we acquire the lock, the ResourceQuota object
+// in the new namespace will be enqueued by the NamespaceReconciler, instead of the
+// ResourceQuotaReconciler. By contrast, if a namespace is *removed* as a descendant, we'll still
+// call the reconciler but it will have no effect (reconcilers can safely be called multiple times,
+// even if the object has been deleted).
+func (r *ResourceQuotaReconciler) EnqueueSubtree(log logr.Logger, nsnm, name string, deleted bool) {
+	r.Forest.Lock()
+	defer r.Forest.Unlock()
+
+	nsnms := r.Forest.Get(nsnm).DescendantNames()
+	nsnms = append(nsnms, nsnm)
+	for _, nsnm := range nsnms {
+		ns := r.Forest.Get(nsnm)
+		if !deleted {
+			if _, ok := ns.GetQuota(name); !ok {
+				ns.SetQuota(name)
+			}
+		}
+		r.OnChangeNamespaceWithRQName(log, ns, name)
+	}
+}
+
+func (r *ResourceQuotaReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// This field will be shown as source.component=hnc.x-k8s.io in events.
+	r.eventRecorder = mgr.GetEventRecorderFor(api.MetaGroup)
+	r.trigger = make(chan event.GenericEvent)
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&v1.ResourceQuota{}).
+		WatchesRawSource(source.Channel(r.trigger, &handler.EnqueueRequestForObject{})).
+		Complete(r)
 }
