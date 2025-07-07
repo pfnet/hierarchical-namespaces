@@ -131,9 +131,7 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Info("Found the parent HRQ", "namespace", hrq.Namespace, "name", hrq.Name)
 
 		inst.Spec.ScopeSelector = hrq.Spec.ScopeSelector
-		metadata.SetLabel(inst, utils.HRQNameLabel, hrq.Name)
-		metadata.SetLabel(inst, utils.HRQNamespaceLabel, hrq.Namespace)
-		metadata.SetAnnotation(inst, utils.NewScopedRQAnnotation, "true")
+		utils.SetLabelsAnnotationsForScopedRQ(inst, hrq.Namespace, hrq.Name)
 	}
 
 	// We only need to write back to the apiserver if the spec has changed

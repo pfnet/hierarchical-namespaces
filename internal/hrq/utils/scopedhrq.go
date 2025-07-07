@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	HRQNameLabel          = "hnc.x-k8s.io/hrq-name"
-	HRQNamespaceLabel     = "hnc.x-k8s.io/hrq-namespace"
-	NewScopedRQAnnotation = "hnc.x-k8s.io/new-scoped-rq"
+	hrqNameLabel          = "hnc.x-k8s.io/hrq-name"
+	hrqNamespaceLabel     = "hnc.x-k8s.io/hrq-namespace"
+	newScopedRQAnnotation = "hnc.x-k8s.io/new-scoped-rq"
 )
 
 const (
@@ -48,7 +48,7 @@ func IsLegacyScopedRQ(rq *v1.ResourceQuota) bool {
 	if !IsHNCManagedRQ(rq) {
 		return false
 	}
-	if v, ok := metadata.GetAnnotation(rq, NewScopedRQAnnotation); ok && v == "true" {
+	if v, ok := metadata.GetAnnotation(rq, newScopedRQAnnotation); ok && v == "true" {
 		return false
 	}
 	return true
@@ -83,12 +83,18 @@ func ScopedRQName(hrqNamespace string, hrqName string) (string, error) {
 }
 
 func ScopedHRQNameFromRQ(rq *v1.ResourceQuota) (types.NamespacedName, error) {
-	namespace, nsOK := metadata.GetLabel(rq, HRQNamespaceLabel)
-	name, nameOK := metadata.GetLabel(rq, HRQNameLabel)
+	namespace, nsOK := metadata.GetLabel(rq, hrqNamespaceLabel)
+	name, nameOK := metadata.GetLabel(rq, hrqNameLabel)
 	if nsOK && nameOK {
 		return types.NamespacedName{Namespace: namespace, Name: name}, nil
 	}
 	return types.NamespacedName{}, fmt.Errorf("no matching HRQ found for RQ: %s", rq.Name)
+}
+
+func SetLabelsAnnotationsForScopedRQ(rq *v1.ResourceQuota, hrqNamespace string, hrqName string) {
+	metadata.SetLabel(rq, hrqNamespaceLabel, hrqNamespace)
+	metadata.SetLabel(rq, hrqNameLabel, hrqName)
+	metadata.SetAnnotation(rq, newScopedRQAnnotation, "true")
 }
 
 func truncate(s string, n int) string {
