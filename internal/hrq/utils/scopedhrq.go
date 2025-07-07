@@ -1,14 +1,25 @@
 package utils
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/metadata"
+)
+
+const (
+	HRQNameLabel          = "hnc.x-k8s.io/hrq-name"
+	HRQNamespaceLabel     = "hnc.x-k8s.io/hrq-namespace"
+	NewScopedRQAnnotation = "hnc.x-k8s.io/new-scoped-rq"
+)
+
+const (
+	maxRQNameLength = 253
 )
 
 func IsSingletonRQ(rq *v1.ResourceQuota) bool {
@@ -37,10 +48,10 @@ func IsLegacyScopedRQ(rq *v1.ResourceQuota) bool {
 	if !IsHNCManagedRQ(rq) {
 		return false
 	}
-	// Legacy format: hnc-singleton-hrqname (no namespace part)
-	// New format: hnc-singleton-namespace--hrqname
-	trimmed := strings.TrimPrefix(rq.Name, api.ResourceQuotaSingletonName+"-")
-	return !strings.Contains(trimmed, "--")
+	if v, ok := metadata.GetAnnotation(rq, NewScopedRQAnnotation); ok && v == "true" {
+		return false
+	}
+	return true
 }
 
 // LegacyScopedRQName generates the legacy RQ name for backward compatibility
@@ -63,21 +74,26 @@ func HRQNameFromLegacyRQName(rqName string) (string, error) {
 }
 
 func ScopedRQName(hrqNamespace string, hrqName string) (string, error) {
-	if strings.Contains(hrqNamespace, "--") {
-		return "", fmt.Errorf("hrq namespace cannot contain '--': %s", hrqNamespace)
-	}
-	return api.ResourceQuotaSingletonName + "-" + hrqNamespace + "--" + hrqName, nil
+	hash := md5.Sum([]byte(fmt.Sprintf("%s/%s", hrqNamespace, hrqName)))
+	hashStr := hex.EncodeToString(hash[:])
+
+	namespaceAndName := truncate(fmt.Sprintf("%s-%s", hrqNamespace, hrqName), maxRQNameLength-len(hashStr)-len(api.ResourceQuotaSingletonName)-2)
+
+	return fmt.Sprintf("%s-%s-%s", api.ResourceQuotaSingletonName, namespaceAndName, hashStr), nil
 }
 
-func ScopedHRQNameFromRQName(rqName string) (types.NamespacedName, error) {
-	if rqName == api.ResourceQuotaSingletonName {
-		return types.NamespacedName{}, fmt.Errorf("invalid RQ name for ScopedHRQ name: %s", rqName)
+func ScopedHRQNameFromRQ(rq *v1.ResourceQuota) (types.NamespacedName, error) {
+	namespace, nsOK := metadata.GetLabel(rq, HRQNamespaceLabel)
+	name, nameOK := metadata.GetLabel(rq, HRQNameLabel)
+	if nsOK && nameOK {
+		return types.NamespacedName{Namespace: namespace, Name: name}, nil
 	}
+	return types.NamespacedName{}, fmt.Errorf("no matching HRQ found for RQ: %s", rq.Name)
+}
 
-	parts := strings.SplitN(strings.TrimPrefix(rqName, api.ResourceQuotaSingletonName+"-"), "--", 2)
-	if len(parts) != 2 {
-		return types.NamespacedName{}, fmt.Errorf("invalid RQ name for ScopedHRQ: %s", rqName)
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-
-	return types.NamespacedName{Namespace: parts[0], Name: parts[1]}, nil
+	return s[:n]
 }

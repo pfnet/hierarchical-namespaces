@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -61,8 +63,8 @@ var _ = Describe("Scoped Hierarchical Resource Quota", Label("pfnet"), func() {
 		hrqA := setScopedHRQ("same-name-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
 		hrqB := setScopedHRQ("same-name-hrq", childNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")}, &scopeSelector)
 
-		rqAName := api.ResourceQuotaSingletonName + "-" + parentNs + "--" + hrqA.Name
-		rqBName := api.ResourceQuotaSingletonName + "-" + childNs + "--" + hrqB.Name
+		rqAName := api.ResourceQuotaSingletonName + "-" + parentNs + "-" + hrqA.Name + "-" + md5Hash(parentNs+"/"+hrqA.Name)
+		rqBName := api.ResourceQuotaSingletonName + "-" + childNs + "-" + hrqB.Name + "-" + md5Hash(childNs+"/"+hrqB.Name)
 
 		FieldShouldContain("resourcequota", parentNs, rqAName, ".spec.hard", "pods:3")
 		FieldShouldContain("resourcequota", childNs, rqAName, ".spec.hard", "pods:3")
@@ -237,4 +239,9 @@ func genPriorityScopeSelector() (corev1.ScopeSelector, string, func()) {
 
 func selectorStr(priorityName string) string {
 	return "map[matchExpressions:[map[operator:In scopeName:PriorityClass values:[" + priorityName + "]]]]"
+}
+
+func md5Hash(s string) string {
+	hash := md5.Sum([]byte(s))
+	return hex.EncodeToString(hash[:])
 }

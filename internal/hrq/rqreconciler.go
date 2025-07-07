@@ -107,16 +107,18 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	log.Info("Reconciling ResourceQuota", "name", fmt.Sprintf("%s/%s", inst.GetNamespace(), inst.GetName()), "limits", inst.Spec.Hard, "usages", inst.Status.Used, "updated", updated)
 
+	var hrq *api.HierarchicalResourceQuota
+
 	// Delete the obsolete singleton and early exit if the new limits are empty.
 	if inst.Spec.Hard == nil {
 		return ctrl.Result{}, r.deleteRQ(ctx, log, inst)
 	} else if !isSingleton && notFound {
-		hrq := &api.HierarchicalResourceQuota{}
-		hrqnnm, err := utils.ScopedHRQNameFromRQName(inst.Name)
+		hrqnnm, err := r.findHRQNameForRQ(inst)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("while getting hrq name: %w", err)
+			return ctrl.Result{}, fmt.Errorf("while finding hrq name for new RQ: %w", err)
 		}
 
+		hrq = &api.HierarchicalResourceQuota{}
 		err = r.Get(ctx, hrqnnm, hrq)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -129,6 +131,9 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Info("Found the parent HRQ", "namespace", hrq.Namespace, "name", hrq.Name)
 
 		inst.Spec.ScopeSelector = hrq.Spec.ScopeSelector
+		metadata.SetLabel(inst, utils.HRQNameLabel, hrq.Name)
+		metadata.SetLabel(inst, utils.HRQNamespaceLabel, hrq.Namespace)
+		metadata.SetAnnotation(inst, utils.NewScopedRQAnnotation, "true")
 	}
 
 	// We only need to write back to the apiserver if the spec has changed
@@ -158,6 +163,7 @@ func (r *ResourceQuotaReconciler) writeRQ(ctx context.Context, log logr.Logger, 
 	if inst.CreationTimestamp.IsZero() {
 		// Set the cleanup label so the singleton can be deleted by selector later.
 		metadata.SetLabel(inst, api.HRQLabelCleanup, "true")
+
 		// Add a non-propagate exception annotation to the instance so that it won't
 		// be overwritten by ancestors, when the resource quota type is configured
 		// as Propagate mode in HNCConfig.
@@ -219,6 +225,38 @@ func (r *ResourceQuotaReconciler) getAncestorHRQs(inst *v1.ResourceQuota) []type
 	}
 
 	return names
+}
+
+// findHRQNameForRQ finds HRQ name and namespace for a new RQ by searching through namespace and ancestor HRQs
+func (r *ResourceQuotaReconciler) findHRQNameForRQ(inst *v1.ResourceQuota) (types.NamespacedName, error) {
+	hrqnnm, err := utils.ScopedHRQNameFromRQ(inst)
+	if err == nil {
+		return hrqnnm, nil
+	}
+
+	// New RQs that don't have the labels yet, so we need to search through the forest
+	r.Forest.Lock()
+	defer r.Forest.Unlock()
+
+	ns := r.Forest.Get(inst.Namespace)
+
+	// Check current namespace and all ancestors
+	namespaces := []string{inst.Namespace}
+	namespaces = append(namespaces, ns.AncestryNames()...)
+
+	for _, nsnm := range namespaces {
+		ancestorNS := r.Forest.Get(nsnm)
+		for _, hrqName := range ancestorNS.HRQNames() {
+			expectedRQName, err := utils.ScopedRQName(nsnm, hrqName)
+			if err != nil {
+				continue
+			}
+			if expectedRQName == inst.Name {
+				return types.NamespacedName{Namespace: nsnm, Name: hrqName}, nil
+			}
+		}
+	}
+	return types.NamespacedName{}, fmt.Errorf("no matching HRQ found for RQ: %s", inst.Name)
 }
 
 // deleteRQ deletes a resource quota on the apiserver and a quota in on-memory if it exists. Otherwise,
