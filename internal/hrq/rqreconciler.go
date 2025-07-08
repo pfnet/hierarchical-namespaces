@@ -364,9 +364,8 @@ func (r *ResourceQuotaReconciler) migrateLegacyScopedRQ(ctx context.Context, log
 	}
 
 	if hrq == nil {
-		// No corresponding HRQ found, delete the legacy RQ
-		log.Info("No corresponding HRQ found, deleting legacy RQ", "rqName", legacyRQ.Name)
-		return ctrl.Result{}, r.deleteRQ(ctx, log, legacyRQ)
+		log.Info("No corresponding HRQ found for legacy RQ", "namespace", legacyRQ.Namespace, "rqName", legacyRQ.Name, "hrqName", hrqName)
+		return ctrl.Result{}, nil
 	}
 
 	// Generate new RQ name
@@ -378,16 +377,16 @@ func (r *ResourceQuotaReconciler) migrateLegacyScopedRQ(ctx context.Context, log
 
 	// Check if new RQ already exists
 	_, err = r.getRQ(ctx, legacyRQ.Namespace, newRQName)
-	if err != nil && !apierrors.IsNotFound(err) {
-		log.Error(err, "Failed to check new RQ existence")
-		return ctrl.Result{}, err
-	}
-
-	if apierrors.IsNotFound(err) {
-		// New RQ doesn't exist yet - the normal reconcile process will create it
-		// Requeue after a short delay to check again
-		log.Info("New format RQ not yet created, requeuing for retry", "legacyName", legacyRQ.Name, "expectedNewName", newRQName)
-		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// New RQ doesn't exist yet - the normal reconcile process will create it
+			// Requeue after a short delay to check again
+			log.Info("New format RQ not yet created, requeuing for retry", "legacyName", legacyRQ.Name, "expectedNewName", newRQName)
+			return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+		} else {
+			log.Error(err, "Failed to check new RQ existence")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// New RQ exists, safe to delete legacy RQ
