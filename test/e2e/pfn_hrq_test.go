@@ -78,7 +78,7 @@ var _ = Describe("Scoped Hierarchical Resource Quota", Label("pfnet"), func() {
 
 	It("should remove obsolete (empty) RQ if there's no longer a Scoped HRQ in the ancestor", func() {
 		hrq := setScopedHRQ("a-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
-		rqName := api.ResourceQuotaSingletonName + "-" + parentNs + "--" + hrq.Name
+		rqName := api.ResourceQuotaSingletonName + "-" + parentNs + "-" + hrq.Name + "-" + md5Hash(parentNs+"/"+hrq.Name)
 
 		MustRun("kubectl delete hrq -n", parentNs, hrq.Name)
 
