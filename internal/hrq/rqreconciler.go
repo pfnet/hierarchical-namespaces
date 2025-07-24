@@ -167,7 +167,6 @@ func (r *ResourceQuotaReconciler) writeRQ(ctx context.Context, log logr.Logger, 
 	if inst.CreationTimestamp.IsZero() {
 		// Set the cleanup label so the singleton can be deleted by selector later.
 		metadata.SetLabel(inst, api.HRQLabelCleanup, "true")
-
 		// Add a non-propagate exception annotation to the instance so that it won't
 		// be overwritten by ancestors, when the resource quota type is configured
 		// as Propagate mode in HNCConfig.
@@ -347,7 +346,7 @@ func (r *ResourceQuotaReconciler) syncResourceLimits(ns *forest.Namespace, inst 
 	return true
 }
 
-// migrateLegacyScopedRQ handles migration from legacy scoped RQ format to new format
+// deleteLegacyScopedRQ deletes the legacy scoped RQ if it exists.
 func (r *ResourceQuotaReconciler) deleteLegacyScopedRQ(ctx context.Context, log logr.Logger, newRQ *v1.ResourceQuota) error {
 	hrqnnm, err := utils.ScopedHRQNameFromRQ(newRQ)
 	if err != nil {
