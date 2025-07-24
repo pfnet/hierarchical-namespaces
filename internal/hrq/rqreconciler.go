@@ -369,33 +369,6 @@ func (r *ResourceQuotaReconciler) deleteLegacyScopedRQ(ctx context.Context, log 
 	return r.deleteRQ(ctx, log, legacyRQ)
 }
 
-// // findHRQForMigration finds the HRQ that corresponds to the legacy RQ
-// func (r *ResourceQuotaReconciler) findHRQForMigration(ctx context.Context, log logr.Logger, namespace, hrqName string) (*api.HierarchicalResourceQuota, error) {
-// 	r.Forest.Lock()
-// 	ns := r.Forest.Get(namespace)
-// 	ancestryNames := ns.AncestryNames()
-// 	r.Forest.Unlock()
-
-// 	for _, nsnm := range ancestryNames {
-// 		hrq := &api.HierarchicalResourceQuota{}
-// 		hrqKey := types.NamespacedName{Namespace: nsnm, Name: hrqName}
-// 		log.Info("Checking HRQ for migration", "hrqNamespace", nsnm, "hrqName", hrqName)
-
-// 		err := r.Get(ctx, hrqKey, hrq)
-// 		if err == nil && hrq.Spec.ScopeSelector != nil {
-// 			// Found scoped HRQ
-// 			log.Info("Found HRQ for migration", "hrqNamespace", nsnm, "hrqName", hrqName)
-// 			return hrq, nil
-// 		}
-
-// 		if err != nil && !apierrors.IsNotFound(err) {
-// 			return nil, fmt.Errorf("error checking HRQ %s/%s: %w", nsnm, hrqName, err)
-// 		}
-// 	}
-
-// 	return nil, nil
-// }
-
 // OnChangeNamespace enqueues the singleton in a specific namespace to trigger the reconciliation of
 // the singleton for a given reason .  This occurs in a goroutine so the caller doesn't block; since
 // the reconciler is never garbage-collected, this is safe.
