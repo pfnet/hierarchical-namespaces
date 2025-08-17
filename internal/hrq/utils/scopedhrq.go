@@ -8,6 +8,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/metadata"
 )
@@ -15,10 +16,6 @@ import (
 const (
 	hrqNameLabel      = "hnc.x-k8s.io/hrq-name"
 	hrqNamespaceLabel = "hnc.x-k8s.io/hrq-namespace"
-)
-
-const (
-	maxRQNameLength = 253
 )
 
 func IsSingletonRQ(rq *v1.ResourceQuota) bool {
@@ -75,7 +72,10 @@ func ScopedRQName(hrqNamespace string, hrqName string) (string, error) {
 	hash := md5.Sum([]byte(fmt.Sprintf("%s/%s", hrqNamespace, hrqName)))
 	hashStr := hex.EncodeToString(hash[:])
 
-	namespaceAndName := truncate(fmt.Sprintf("%s-%s", hrqNamespace, hrqName), maxRQNameLength-len(hashStr)-len(api.ResourceQuotaSingletonName)-2)
+	namespaceAndName := truncate(
+		fmt.Sprintf("%s-%s", hrqNamespace, hrqName),
+		validation.DNS1123SubdomainMaxLength-len(hashStr)-len(api.ResourceQuotaSingletonName)-2,
+	)
 
 	return fmt.Sprintf("%s-%s-%s", api.ResourceQuotaSingletonName, namespaceAndName, hashStr), nil
 }
