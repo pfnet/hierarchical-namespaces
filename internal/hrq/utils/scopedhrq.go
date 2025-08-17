@@ -74,7 +74,7 @@ func ScopedRQName(hrqNamespace string, hrqName string) (string, error) {
 
 	namespaceAndName := truncate(
 		fmt.Sprintf("%s-%s", hrqNamespace, hrqName),
-		validation.DNS1123SubdomainMaxLength-len(hashStr)-len(api.ResourceQuotaSingletonName)-2,
+		uint(validation.DNS1123SubdomainMaxLength-len(hashStr)-len(api.ResourceQuotaSingletonName)-2),
 	)
 
 	return fmt.Sprintf("%s-%s-%s", api.ResourceQuotaSingletonName, namespaceAndName, hashStr), nil
@@ -94,8 +94,8 @@ func SetLabelsAnnotationsForScopedRQ(rq *v1.ResourceQuota, hrqNamespace string, 
 	metadata.SetLabel(rq, hrqNameLabel, hrqName)
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
+func truncate(s string, n uint) string {
+	if uint(len(s)) <= n {
 		return s
 	}
 	return s[:n]
