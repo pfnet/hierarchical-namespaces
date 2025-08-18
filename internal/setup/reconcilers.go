@@ -35,7 +35,10 @@ func Create(log logr.Logger, mgr ctrl.Manager, f *forest.Forest, opts Options) {
 
 	if !opts.NoWebhooks {
 		log.Info("Registering validating webhook (won't work when running locally; use --no-webhooks)")
-		createWebhooks(mgr, f, opts)
+		if err := createWebhooks(mgr, f, opts); err != nil {
+			log.Error(err, "cannot create webhooks")
+			os.Exit(1)
+		}
 	}
 
 	log.Info("Registering reconcilers")

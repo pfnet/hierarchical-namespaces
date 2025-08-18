@@ -7,15 +7,15 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	k8sadm "k8s.io/api/admission/v1"
 	authnv1 "k8s.io/api/authentication/v1"
 	authzv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
@@ -38,10 +38,15 @@ const (
 // +kubebuilder:webhook:admissionReviewVersions=v1,path=/validate-hnc-x-k8s-io-v1alpha2-hierarchyconfigurations,mutating=false,failurePolicy=fail,groups="hnc.x-k8s.io",resources=hierarchyconfigurations,sideEffects=None,verbs=create;update,versions=v1alpha2,name=hierarchyconfigurations.hnc.x-k8s.io
 
 type Validator struct {
-	Log     logr.Logger
-	Forest  *forest.Forest
-	server  serverClient
-	decoder admission.Decoder
+	Forest *forest.Forest
+	server serverClient
+}
+
+func NewValidator(forest *forest.Forest, client client.Client) *Validator {
+	return &Validator{
+		Forest: forest,
+		server: &realClient{client: client},
+	}
 }
 
 // serverClient represents the checks that should typically be performed against the apiserver, but
@@ -55,13 +60,19 @@ type serverClient interface {
 	IsAdmin(ctx context.Context, ui *authnv1.UserInfo, nnm string) (bool, error)
 }
 
-// request defines the aspects of the admission.Request that we care about.
-type request struct {
-	hc *api.HierarchyConfiguration
-	ui *authnv1.UserInfo
+func (v *Validator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	return v.handle(ctx, obj)
 }
 
-// Handle implements the validation webhook.
+func (v *Validator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	return v.handle(ctx, obj)
+}
+
+func (v *Validator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	return v.handle(ctx, newObj)
+}
+
+// handle implements the validation webhook.
 //
 // During updates, the validator currently ignores the existing state of the object (`oldObject`).
 // The reason is that most of the checks being performed are on the state of the entire forest, not
@@ -84,25 +95,6 @@ type request struct {
 // possible to introduce structural failures, as described in the user docs.
 //
 // Authz false positives are prevented as described by the comments to `getServerChecks`.
-func (v *Validator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := v.Log.WithValues("ns", req.Namespace, "op", req.Operation, "user", req.UserInfo.Username)
-	decoded, err := v.decodeRequest(req)
-	if err != nil {
-		log.Error(err, "Couldn't decode request")
-		return webhooks.DenyBadRequest(err)
-	}
-
-	resp := v.handle(ctx, log, decoded)
-	if !resp.Allowed {
-		log.Info("Denied", "code", resp.Result.Code, "reason", resp.Result.Reason, "message", resp.Result.Message)
-	} else {
-		log.V(1).Info("Allowed", "message", resp.Result.Message)
-	}
-	return resp
-}
-
-// handle implements the non-boilerplate logic of this validator, allowing it to be more easily unit
-// tested (ie without constructing a full admission.Request).
 //
 // This follows the standard HNC pattern of:
 // - Load a bunch of stuff from the apiserver
@@ -111,47 +103,57 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 //
 // This minimizes the amount of time that the forest is locked, allowing different threads to
 // proceed in parallel.
-func (v *Validator) handle(ctx context.Context, log logr.Logger, req *request) admission.Response {
+func (v *Validator) handle(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, apierrors.NewInternalError(err)
+	}
+
+	log := admission.DefaultLogConstructor(logf.FromContext(ctx), &req)
+
 	// Early exit: the HNC SA can do whatever it wants. This is because if an illegal HC already
 	// exists on the K8s server, we need to be able to update its status even though the rest of the
 	// object wouldn't pass legality. We should probably only give the HNC SA the ability to modify
 	// the _status_, though. TODO: https://github.com/kubernetes-sigs/hierarchical-namespaces/issues/80.
-	if webhooks.IsHNCServiceAccount(req.ui) {
-		return allow("HNC SA")
+	if webhooks.IsHNCServiceAccount(&req.UserInfo) {
+		return nil, nil
 	}
 
-	if why := config.WhyUnmanaged(req.hc.Namespace); why != "" {
-		err := fmt.Errorf("namespace %q is not managed by HNC (%s) and cannot be set as a child of another namespace", req.hc.Namespace, why)
-		return webhooks.DenyForbidden(api.HierarchyConfigurationGR, api.Singleton, err)
-	}
-	if why := config.WhyUnmanaged(req.hc.Spec.Parent); why != "" {
-		err := fmt.Errorf("namespace %q is not managed by HNC (%s) and cannot be set as the parent of another namespace", req.hc.Spec.Parent, why)
-		return webhooks.DenyForbidden(api.HierarchyConfigurationGR, api.Singleton, err)
+	hc, ok := obj.(*api.HierarchyConfiguration)
+	if !ok {
+		return nil, apierrors.NewInternalError(fmt.Errorf("expected a HierarchyConfiguration but got a %T", obj))
 	}
 
-	labelErrs := config.ValidateManagedLabels(req.hc.Spec.Labels)
-	annotationErrs := config.ValidateManagedAnnotations(req.hc.Spec.Annotations)
+	if why := config.WhyUnmanaged(hc.Namespace); why != "" {
+		return nil, apierrors.NewForbidden(api.HierarchyConfigurationGR, api.Singleton, fmt.Errorf("namespace %q is not managed by HNC (%s) and cannot be set as a child of another namespace", hc.Namespace, why))
+	}
+	if why := config.WhyUnmanaged(hc.Spec.Parent); why != "" {
+		return nil, apierrors.NewForbidden(api.HierarchyConfigurationGR, api.Singleton, fmt.Errorf("namespace %q is not managed by HNC (%s) and cannot be set as the parent of another namespace", hc.Spec.Parent, why))
+	}
+
+	labelErrs := config.ValidateManagedLabels(hc.Spec.Labels)
+	annotationErrs := config.ValidateManagedAnnotations(hc.Spec.Annotations)
 	allErrs := append(labelErrs, annotationErrs...)
 	if len(allErrs) > 0 {
-		return webhooks.DenyInvalid(api.HierarchyConfigurationGK, req.hc.Name, allErrs)
+		return nil, apierrors.NewInvalid(api.HierarchyConfigurationGK, hc.Name, allErrs)
 	}
 
 	// Do all checks that require holding the in-memory lock. Generate a list of server checks we
 	// should perform once the lock is released.
-	serverChecks, resp := v.checkForest(req.hc)
-	if !resp.Allowed {
-		return resp
+	serverChecks, err := v.checkForest(hc)
+	if err != nil {
+		return nil, err
 	}
 
 	// Ensure that the server's in the right state to make the changes.
-	return v.checkServer(ctx, log, req.ui, serverChecks)
+	return nil, v.checkServer(ctx, log, &req.UserInfo, serverChecks)
 }
 
 // checkForest validates that the request is allowed based on the current in-memory state of the
 // forest. If it is, it returns a list of checks we need to perform against the apiserver in order
 // to be allowed to make the change; these checks are executed _after_ the in-memory lock is
 // released.
-func (v *Validator) checkForest(hc *api.HierarchyConfiguration) ([]serverCheck, admission.Response) {
+func (v *Validator) checkForest(hc *api.HierarchyConfiguration) ([]serverCheck, error) {
 	v.Forest.Lock()
 	defer v.Forest.Unlock()
 
@@ -161,59 +163,54 @@ func (v *Validator) checkForest(hc *api.HierarchyConfiguration) ([]serverCheck, 
 	newParent := v.Forest.Get(hc.Spec.Parent)
 
 	// Check problems on the namespace itself
-	if resp := v.checkNS(ns); !resp.Allowed {
-		return nil, resp
+	if err := v.checkNS(ns); err != nil {
+		return nil, err
 	}
 
 	// Check problems on the parents
-	if resp := v.checkParent(ns, curParent, newParent); !resp.Allowed {
-		return nil, resp
+	if err := v.checkParent(ns, curParent, newParent); err != nil {
+		return nil, err
 	}
 
 	// The structure looks good. Get the list of namespaces we need server checks on.
-	return v.getServerChecks(curParent, newParent), allow("")
+	return v.getServerChecks(curParent, newParent), nil
 }
 
 // checkNS looks for problems with the current namespace that should prevent changes.
-func (v *Validator) checkNS(ns *forest.Namespace) admission.Response {
+func (v *Validator) checkNS(ns *forest.Namespace) error {
 	// Wait until the namespace has been synced
 	if !ns.Exists() {
-		msg := fmt.Sprintf("HNC has not reconciled namespace %q yet - please try again in a few moments.", ns.Name())
-		return webhooks.DenyServiceUnavailable(msg)
+		return apierrors.NewServiceUnavailable(fmt.Sprintf("HNC has not reconciled namespace %q yet - please try again in a few moments.", ns.Name()))
 	}
 
 	// Deny the request if the namespace has a halted root - but not if it's halted itself, since we
 	// may be trying to resolve the halted condition.
 	haltedRoot := ns.GetHaltedRoot()
 	if haltedRoot != "" && haltedRoot != ns.Name() {
-		err := fmt.Errorf("ancestor %q of namespace %q has a critical condition, which must be resolved before any changes can be made to the hierarchy configuration", haltedRoot, ns.Name())
-		return webhooks.DenyForbidden(api.HierarchyConfigurationGR, api.Singleton, err)
+		return apierrors.NewForbidden(api.HierarchyConfigurationGR, api.Singleton, fmt.Errorf("ancestor %q of namespace %q has a critical condition, which must be resolved before any changes can be made to the hierarchy configuration", haltedRoot, ns.Name()))
 	}
 
-	return allow("")
+	return nil
 }
 
 // checkParent validates if the parent is legal based on the current in-memory state of the forest.
-func (v *Validator) checkParent(ns, curParent, newParent *forest.Namespace) admission.Response {
+func (v *Validator) checkParent(ns, curParent, newParent *forest.Namespace) error {
 	if ns.IsExternal() && newParent != nil {
-		err := fmt.Errorf("namespace %q is managed by %q, not HNC, so it cannot have a parent in HNC", ns.Name(), ns.Manager)
-		return webhooks.DenyForbidden(api.HierarchyConfigurationGR, api.Singleton, err)
+		return apierrors.NewForbidden(api.HierarchyConfigurationGR, api.Singleton, fmt.Errorf("namespace %q is managed by %q, not HNC, so it cannot have a parent in HNC", ns.Name(), ns.Manager))
 	}
 
 	if curParent == newParent {
-		return allow("parent unchanged")
+		return nil
 	}
 
 	// Prevent changing parent of a subnamespace
 	if ns.IsSub {
-		err := fmt.Errorf("illegal parent: Cannot set the parent of %q to %q because it's a subnamespace of %q", ns.Name(), newParent.Name(), curParent.Name())
-		return webhooks.DenyConflict(api.HierarchyConfigurationGR, api.Singleton, err)
+		return apierrors.NewForbidden(api.HierarchyConfigurationGR, api.Singleton, fmt.Errorf("illegal parent: Cannot set the parent of %q to %q because it's a subnamespace of %q", ns.Name(), newParent.Name(), curParent.Name()))
 	}
 
 	// non existence of parent namespace -> not allowed
 	if newParent != nil && !newParent.Exists() {
-		err := fmt.Errorf("requested parent %q does not exist", newParent.Name())
-		return webhooks.DenyForbidden(api.HierarchyConfigurationGR, api.Singleton, err)
+		return apierrors.NewForbidden(api.HierarchyConfigurationGR, api.Singleton, fmt.Errorf("requested parent %q does not exist", newParent.Name()))
 	}
 
 	// Is this change structurally legal? Note that this can "leak" information about the hierarchy
@@ -222,8 +219,7 @@ func (v *Validator) checkParent(ns, curParent, newParent *forest.Namespace) admi
 	// have visibility into its ancestry and descendents, and this check can only fail if the new
 	// parent conflicts with something in the _existing_ hierarchy.
 	if reason := ns.CanSetParent(newParent); reason != "" {
-		err := fmt.Errorf("illegal parent: %s", reason)
-		return webhooks.DenyConflict(api.HierarchyConfigurationGR, api.Singleton, err)
+		return apierrors.NewConflict(api.HierarchyConfigurationGR, api.Singleton, fmt.Errorf("illegal parent: %s", reason))
 	}
 
 	// Prevent overwriting source objects in the descendants after the hierarchy change.
@@ -231,11 +227,10 @@ func (v *Validator) checkParent(ns, curParent, newParent *forest.Namespace) admi
 		msg := "Cannot update hierarchy because it would overwrite the following object(s):\n"
 		msg += "  * " + strings.Join(co, "\n  * ") + "\n"
 		msg += "To fix this, please rename or remove the conflicting objects first."
-		err := errors.New(msg)
-		return webhooks.DenyConflict(api.HierarchyConfigurationGR, api.Singleton, err)
+		return apierrors.NewConflict(api.HierarchyConfigurationGR, api.Singleton, errors.New(msg))
 	}
 
-	return allow("")
+	return nil
 }
 
 // getConflictingObjects returns a list of namespaced objects if there's any conflict.
@@ -393,9 +388,9 @@ func (v *Validator) getServerChecks(curParent, newParent *forest.Namespace) []se
 }
 
 // checkServer executes the list of requested checks.
-func (v *Validator) checkServer(ctx context.Context, log logr.Logger, ui *authnv1.UserInfo, reqs []serverCheck) admission.Response {
+func (v *Validator) checkServer(ctx context.Context, log logr.Logger, ui *authnv1.UserInfo, reqs []serverCheck) error {
 	if v.server == nil {
-		return allow("") // unit test; TODO put in fake
+		return nil // unit test; TODO put in fake
 	}
 
 	// TODO: parallelize?
@@ -405,54 +400,26 @@ func (v *Validator) checkServer(ctx context.Context, log logr.Logger, ui *authnv
 			log.Info("Checking existence", "object", req.nnm, "reason", req.reason)
 			exists, err := v.server.Exists(ctx, req.nnm)
 			if err != nil {
-				err = fmt.Errorf("while checking existance for %q, the %s: %w", req.nnm, req.reason, err)
-				return webhooks.DenyInternalError(err)
+				return apierrors.NewInternalError(fmt.Errorf("while checking existance for %q, the %s: %w", req.nnm, req.reason, err))
 			}
 
 			if exists {
-				msg := fmt.Sprintf("HNC has not reconciled namespace %q yet - please try again in a few moments.", req.nnm)
-				return webhooks.DenyServiceUnavailable(msg)
+				return apierrors.NewServiceUnavailable(fmt.Sprintf("HNC has not reconciled namespace %q yet - please try again in a few moments.", req.nnm))
 			}
 
 		case checkAuthz:
 			log.Info("Checking authz", "object", req.nnm, "reason", req.reason)
 			allowed, err := v.server.IsAdmin(ctx, ui, req.nnm)
 			if err != nil {
-				err = fmt.Errorf("while checking authz for %q, the %s: %w", req.nnm, req.reason, err)
-				return webhooks.DenyInternalError(err)
+				return apierrors.NewInternalError(fmt.Errorf("while checking authz for %q, the %s: %w", req.nnm, req.reason, err))
 			}
 
 			if !allowed {
-				return webhooks.DenyUnauthorized(fmt.Sprintf("User %s is not authorized to modify the subtree of %s, which is the %s",
-					ui.Username, req.nnm, req.reason))
+				return apierrors.NewUnauthorized(fmt.Sprintf("user %s is not authorized to modify the subtree of %s, which is the %s", ui.Username, req.nnm, req.reason))
 			}
 		}
 	}
 
-	return allow("")
-}
-
-// decodeRequest gets the information we care about into a simple struct that's easy to both a) use
-// and b) factor out in unit tests.
-func (v *Validator) decodeRequest(in admission.Request) (*request, error) {
-	hc := &api.HierarchyConfiguration{}
-	if err := v.decoder.Decode(in, hc); err != nil {
-		return nil, err
-	}
-
-	return &request{
-		hc: hc,
-		ui: &in.UserInfo,
-	}, nil
-}
-
-func (v *Validator) InjectClient(c client.Client) error {
-	v.server = &realClient{client: c}
-	return nil
-}
-
-func (v *Validator) InjectDecoder(d admission.Decoder) error {
-	v.decoder = d
 	return nil
 }
 
@@ -504,16 +471,4 @@ func (r *realClient) IsAdmin(ctx context.Context, ui *authnv1.UserInfo, nnm stri
 
 	// Extract the interesting result
 	return sar.Status.Allowed, err
-}
-
-// allow is a replacement for controller-runtime's admission.Allowed() that allows you to set the
-// message (human-readable) as opposed to the reason (machine-readable).
-func allow(msg string) admission.Response {
-	return admission.Response{AdmissionResponse: k8sadm.AdmissionResponse{
-		Allowed: true,
-		Result: &metav1.Status{
-			Code:    0,
-			Message: msg,
-		},
-	}}
 }

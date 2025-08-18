@@ -6,9 +6,11 @@ import (
 	cert "github.com/open-policy-agent/cert-controller/pkg/rotator"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/anchor"
 	"sigs.k8s.io/hierarchical-namespaces/internal/config"
 	"sigs.k8s.io/hierarchical-namespaces/internal/forest"
@@ -57,21 +59,19 @@ func ManageCerts(mgr ctrl.Manager, setupFinished chan struct{}, restartOnSecretR
 }
 
 // createWebhooks creates all mutators and validators.
-func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) {
+func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	decoder := admission.NewDecoder(mgr.GetScheme())
 
 	// NOTE(ryotarai): The injecting mechanism is removed in https://github.com/kubernetes-sigs/controller-runtime/pull/2134
 	// For now, the decoder and client are injected manually, but we might want to replace this with sigs.k8s.io/controller-runtime/pkg/builder.WebhookManagedBy
 
 	// Create webhook for Hierarchy
-	{
-		handler := &hierarchyconfig.Validator{
-			Log:    ctrl.Log.WithName("hierarchyconfig").WithName("validate"),
-			Forest: f,
-		}
-		handler.InjectDecoder(decoder)
-		handler.InjectClient(mgr.GetClient())
-		mgr.GetWebhookServer().Register(hierarchyconfig.ServingPath, &webhook.Admission{Handler: handler})
+	if err := builder.WebhookManagedBy(mgr).
+		For(&api.HierarchyConfiguration{}).
+		WithCustomPath(hierarchyconfig.ServingPath).
+		WithValidator(hierarchyconfig.NewValidator(f, mgr.GetClient())).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create webhook for hierarchyconfig: %w", err)
 	}
 
 	// Create webhooks for managed objects
@@ -147,4 +147,6 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) {
 			mgr.GetWebhookServer().Register(hrq.HRQServingPath, &webhook.Admission{Handler: handler})
 		}
 	}
+
+	return nil
 }

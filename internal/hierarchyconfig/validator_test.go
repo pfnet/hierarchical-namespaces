@@ -2,25 +2,32 @@ package hierarchyconfig
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	. "github.com/onsi/gomega"
+	admissionv1 "k8s.io/api/admission/v1"
 	authn "k8s.io/api/authentication/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/config"
 	"sigs.k8s.io/hierarchical-namespaces/internal/foresttest"
 	"sigs.k8s.io/hierarchical-namespaces/internal/objects"
 )
 
+func newContext(ctx context.Context) context.Context {
+	return admission.NewContextWithRequest(ctx, admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{},
+	})
+}
+
 func TestManagedMeta(t *testing.T) {
 	f := foresttest.Create("-") // a
 	h := &Validator{Forest: f}
-	l := zap.New()
 	// For this test we accept any label or annotation not starting with 'h',
 	// to allow almost any meta - except the hnc.x-k8s.io labels/annotations,
 	// which cannot be managed anyway. And allows us to use that for testing.
@@ -70,12 +77,9 @@ func TestManagedMeta(t *testing.T) {
 			hc.ObjectMeta.Namespace = "a"
 			hc.Spec.Labels = tc.labels
 			hc.Spec.Annotations = tc.annotations
-			req := &request{hc: hc}
 
-			got := h.handle(context.Background(), l, req)
-
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).Should(Equal(tc.allowed))
+			_, err := h.handle(newContext(t.Context()), hc)
+			g.Expect(err).To(Succeed())
 		})
 	}
 }
@@ -83,7 +87,6 @@ func TestManagedMeta(t *testing.T) {
 func TestStructure(t *testing.T) {
 	f := foresttest.Create("-a-") // a <- b; c
 	h := &Validator{Forest: f}
-	l := zap.New()
 	// For this unit test, we only set `kube-system` as an excluded namespace.
 	config.SetNamespaces("", "kube-system")
 
@@ -114,15 +117,16 @@ func TestStructure(t *testing.T) {
 			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.pnm}}
 			hc.ObjectMeta.Name = api.Singleton
 			hc.ObjectMeta.Namespace = tc.nnm
-			req := &request{hc: hc}
 
 			// Test
-			got := h.handle(context.Background(), l, req)
+			_, err := h.handle(newContext(t.Context()), hc)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
-			g.Expect(got.Result.Message).Should(ContainSubstring(tc.msgContains))
+			if tc.fail {
+				g.Expect(err).To(MatchError(ContainSubstring(tc.msgContains)))
+			} else {
+				g.Expect(err).To(Succeed())
+			}
 		})
 	}
 }
@@ -130,7 +134,6 @@ func TestStructure(t *testing.T) {
 func TestChangeParentOnManagedBy(t *testing.T) {
 	f := foresttest.Create("-a-c") // a <- b; c <- d
 	h := &Validator{Forest: f}
-	l := zap.New()
 
 	// Make c and d external namespaces
 	f.Get("c").Manager = "external-tool"
@@ -159,14 +162,16 @@ func TestChangeParentOnManagedBy(t *testing.T) {
 			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.pnm}}
 			hc.ObjectMeta.Name = api.Singleton
 			hc.ObjectMeta.Namespace = tc.nnm
-			req := &request{hc: hc}
 
 			// Test
-			got := h.handle(context.Background(), l, req)
+			_, err := h.handle(newContext(t.Context()), hc)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).To(Not(Succeed()))
+			} else {
+				g.Expect(err).To(Succeed())
+			}
 		})
 	}
 }
@@ -188,7 +193,6 @@ func TestChangeParentWithConflict(t *testing.T) {
 	foresttest.CreateSecret("conflict", "d", f)
 
 	h := &Validator{Forest: f}
-	l := zap.New()
 
 	tests := []struct {
 		name string
@@ -210,14 +214,16 @@ func TestChangeParentWithConflict(t *testing.T) {
 			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.pnm}}
 			hc.ObjectMeta.Name = api.Singleton
 			hc.ObjectMeta.Namespace = tc.nnm
-			req := &request{hc: hc}
 
 			// Test
-			got := h.handle(context.Background(), l, req)
+			_, err := h.handle(newContext(t.Context()), hc)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).To(Not(Succeed()))
+			} else {
+				g.Expect(err).To(Succeed())
+			}
 		})
 	}
 }
@@ -243,7 +249,6 @@ func TestConflictItemWithPropagateNoneLabel(t *testing.T) {
 	foresttest.CreateSecret("conflict", "d", f)
 
 	h := &Validator{Forest: f}
-	l := zap.New()
 	tests := []struct {
 		name string
 		nnm  string
@@ -261,14 +266,16 @@ func TestConflictItemWithPropagateNoneLabel(t *testing.T) {
 			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.pnm}}
 			hc.ObjectMeta.Name = api.Singleton
 			hc.ObjectMeta.Namespace = tc.nnm
-			req := &request{hc: hc}
 
 			// Test
-			got := h.handle(context.Background(), l, req)
+			_, err := h.handle(newContext(t.Context()), hc)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).To(Not(Succeed()))
+			} else {
+				g.Expect(err).To(Succeed())
+			}
 		})
 	}
 
@@ -305,26 +312,25 @@ func TestAuthz(t *testing.T) {
 			g := NewWithT(t)
 			f := foresttest.Create(tc.forest)
 			h := &Validator{Forest: f, server: tc.server}
-			l := zap.New()
 
 			// Create request
 			hc := &api.HierarchyConfiguration{Spec: api.HierarchyConfigurationSpec{Parent: tc.to}}
 			hc.ObjectMeta.Name = api.Singleton
 			hc.ObjectMeta.Namespace = tc.nm
-			req := &request{hc: hc, ui: &authn.UserInfo{Username: "jen"}}
 
 			// Test
-			got := h.handle(context.Background(), l, req)
+			_, err := h.handle(newContext(t.Context()), hc)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Result.Code).Should(Equal(tc.code))
+			if tc.code > 0 {
+				var apiStatus apierrors.APIStatus
+				g.Expect(errors.As(err, &apiStatus)).Should(BeTrue())
+				g.Expect(apiStatus.Status().Code).Should(Equal(tc.code))
+			} else {
+				g.Expect(err).To(Succeed())
+			}
 		})
 	}
-}
-
-func logResult(t *testing.T, result *metav1.Status) {
-	t.Logf("Got reason %q, code %d, msg %q", result.Reason, result.Code, result.Message)
 }
 
 // fakeServer implements serverClient. It's implemented as a string separated by a colon (":") with
