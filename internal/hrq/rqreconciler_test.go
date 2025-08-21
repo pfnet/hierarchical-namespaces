@@ -68,7 +68,8 @@ var _ = Describe("RQ reconciler tests", func() {
 		setHRQ(ctx, barHRQName, barName, nil, "secrets", "100", "cpu", "50")
 		setHRQ(ctx, bazHRQName, bazName, nil, "pods", "1")
 		hrqWithSelectorName := "hrq-with-selector"
-		rqName := fmt.Sprintf("%s-%s", api.ResourceQuotaSingletonName, hrqWithSelectorName)
+		rqName, err := utils.ScopedRQName(fooName, hrqWithSelectorName)
+		Expect(err).NotTo(HaveOccurred())
 		setHRQ(ctx, hrqWithSelectorName, fooName, &highPrioritySelector, "cpu", "4", "pods", "2")
 
 		Eventually(getRQHard(ctx, fooName, api.ResourceQuotaSingletonName)).Should(equalRL("secrets", "6", "pods", "3"))
@@ -89,7 +90,8 @@ var _ = Describe("RQ reconciler tests", func() {
 		setHRQ(ctx, bazHRQName, bazName, nil, "pods", "1")
 
 		hrqWithSelectorName := "hrq-with-selector"
-		rqName := fmt.Sprintf("%s-%s", api.ResourceQuotaSingletonName, hrqWithSelectorName)
+		rqName, err := utils.ScopedRQName(fooName, hrqWithSelectorName)
+		Expect(err).NotTo(HaveOccurred())
 		setHRQ(ctx, hrqWithSelectorName, fooName, &highPrioritySelector, "cpu", "6", "pods", "3")
 		setHRQ(ctx, hrqWithSelectorName, barName, &highPrioritySelector, "cpu", "100", "pods", "50")
 		setHRQ(ctx, hrqWithSelectorName, bazName, &highPrioritySelector, "pods", "1")

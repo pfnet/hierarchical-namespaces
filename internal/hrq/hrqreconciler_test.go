@@ -150,7 +150,11 @@ var _ = Describe("HRQ reconciler tests", func() {
 
 		// Scoped HRQs don't affect the result of TestCheckHRQDrift.
 		forestOverrideSubtreeUsages("hrq-selector", "cpu", "3")
-		updateRQUsage(ctx, fooName, utils.ScopedRQName("hrq-selector"), "cpu", "5")
+
+		scopedRQ, err := utils.ScopedRQName(fooName, "hrq-selector")
+		Expect(err).NotTo(HaveOccurred())
+		updateRQUsage(ctx, fooName, scopedRQ, "cpu", "5")
+
 		drift, err = TestCheckHRQDrift()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(drift).Should(BeFalse())

@@ -83,6 +83,19 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	isSingleton := utils.IsSingletonRQ(inst)
+	isLegacyScoped := utils.IsLegacyScopedRQ(inst)
+
+	if isLegacyScoped {
+		// Ignore legacy scoped RQs
+		// It will be deleted in the reconcile loop for the new RQ.
+		return ctrl.Result{}, nil
+	}
+
+	if !notFound && !isSingleton { // scoped RQ exists
+		if err := r.deleteLegacyScopedRQ(ctx, log, inst); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	r.Forest.Lock()
 	ns := r.Forest.Get(inst.ObjectMeta.Namespace)
@@ -100,43 +113,31 @@ func (r *ResourceQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	log.Info("Reconciling ResourceQuota", "name", fmt.Sprintf("%s/%s", inst.GetNamespace(), inst.GetName()), "limits", inst.Spec.Hard, "usages", inst.Status.Used, "updated", updated)
 
+	var hrq *api.HierarchicalResourceQuota
+
 	// Delete the obsolete singleton and early exit if the new limits are empty.
 	if inst.Spec.Hard == nil {
 		return ctrl.Result{}, r.deleteRQ(ctx, log, inst)
 	} else if !isSingleton && notFound {
-		hrq := &api.HierarchicalResourceQuota{}
-		hrqName, err := utils.ScopedHRQNameFromHRQName(inst.Name)
+		hrqnnm, err := r.findHRQNameForRQ(inst)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("while getting hrq name: %w", err)
+			return ctrl.Result{}, fmt.Errorf("while finding hrq name for new RQ: %w", err)
 		}
 
-		cursorNm := ns
-		var found bool
-		for {
-			if cursorNm == nil {
-				break
-			}
-
-			hrqnnm := types.NamespacedName{Namespace: cursorNm.Name(), Name: hrqName}
-			err := r.Get(ctx, hrqnnm, hrq)
-			if err == nil {
-				found = true
-				break
-			}
+		hrq = &api.HierarchicalResourceQuota{}
+		err = r.Get(ctx, hrqnnm, hrq)
+		if err != nil {
 			if apierrors.IsNotFound(err) {
-				cursorNm = cursorNm.Parent()
-				continue
+				return ctrl.Result{}, fmt.Errorf("the parent hrq not found: %s", hrqnnm)
+			} else {
+				return ctrl.Result{}, fmt.Errorf("getting hrq %s: %w", hrqnnm, err)
 			}
-
-			return ctrl.Result{}, fmt.Errorf("while getting hrq: %w", err)
-		}
-		if !found {
-			return ctrl.Result{}, fmt.Errorf("the parent hrq not found: %s", hrqName)
 		}
 
 		log.Info("Found the parent HRQ", "namespace", hrq.Namespace, "name", hrq.Name)
 
 		inst.Spec.ScopeSelector = hrq.Spec.ScopeSelector
+		utils.SetLabelsAnnotationsForScopedRQ(inst, hrq.Namespace, hrq.Name)
 	}
 
 	// We only need to write back to the apiserver if the spec has changed
@@ -229,6 +230,38 @@ func (r *ResourceQuotaReconciler) getAncestorHRQs(inst *v1.ResourceQuota) []type
 	return names
 }
 
+// findHRQNameForRQ finds HRQ name and namespace for a new RQ by searching through namespace and ancestor HRQs
+func (r *ResourceQuotaReconciler) findHRQNameForRQ(inst *v1.ResourceQuota) (types.NamespacedName, error) {
+	hrqnnm, err := utils.ScopedHRQNameFromRQ(inst)
+	if err == nil {
+		return hrqnnm, nil
+	}
+
+	// New RQs that don't have the labels yet, so we need to search through the forest
+	r.Forest.Lock()
+	defer r.Forest.Unlock()
+
+	ns := r.Forest.Get(inst.Namespace)
+
+	// Check current namespace and all ancestors
+	namespaces := []string{inst.Namespace}
+	namespaces = append(namespaces, ns.AncestryNames()...)
+
+	for _, nsnm := range namespaces {
+		ancestorNS := r.Forest.Get(nsnm)
+		for _, hrqName := range ancestorNS.HRQNames() {
+			expectedRQName, err := utils.ScopedRQName(nsnm, hrqName)
+			if err != nil {
+				continue
+			}
+			if expectedRQName == inst.Name {
+				return types.NamespacedName{Namespace: nsnm, Name: hrqName}, nil
+			}
+		}
+	}
+	return types.NamespacedName{}, fmt.Errorf("no matching HRQ found for RQ: %s", inst.Name)
+}
+
 // deleteRQ deletes a resource quota on the apiserver and a quota in on-memory if it exists. Otherwise,
 // do nothing.
 func (r *ResourceQuotaReconciler) deleteRQ(ctx context.Context, log logr.Logger, inst *v1.ResourceQuota) error {
@@ -311,6 +344,28 @@ func (r *ResourceQuotaReconciler) syncResourceLimits(ns *forest.Namespace, inst 
 	}
 	inst.Spec.Hard = l
 	return true
+}
+
+// deleteLegacyScopedRQ deletes the legacy scoped RQ if it exists.
+func (r *ResourceQuotaReconciler) deleteLegacyScopedRQ(ctx context.Context, log logr.Logger, newRQ *v1.ResourceQuota) error {
+	hrqnnm, err := utils.ScopedHRQNameFromRQ(newRQ)
+	if err != nil {
+		return fmt.Errorf("get HRQ name from RQ: %w", err)
+	}
+
+	legacyRQName := utils.LegacyScopedRQName(hrqnnm.Name)
+
+	legacyRQ, err := r.getRQ(ctx, newRQ.Namespace, legacyRQName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		} else {
+			return err
+		}
+	}
+
+	log.Info("Deleting legacy scoped RQ", "legacyRQ", legacyRQ.Name, "namespace", legacyRQ.Namespace)
+	return r.deleteRQ(ctx, log, legacyRQ)
 }
 
 // OnChangeNamespace enqueues the singleton in a specific namespace to trigger the reconciliation of

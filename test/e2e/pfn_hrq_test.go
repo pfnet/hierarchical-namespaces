@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
+	"sigs.k8s.io/hierarchical-namespaces/internal/hrq/utils"
 	"sigs.k8s.io/yaml"
 
 	"github.com/google/uuid"
@@ -58,23 +61,25 @@ var _ = Describe("Scoped Hierarchical Resource Quota", Label("pfnet"), func() {
 	})
 
 	It("should create RQs with correct limits in the descendants (including itself) for Scoped HRQs", func() {
-		hrqA := setScopedHRQ("a-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
-		hrqB := setScopedHRQ("b-hrq", childNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")}, &scopeSelector)
+		hrqA := setScopedHRQ("same-name-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
+		hrqB := setScopedHRQ("same-name-hrq", childNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2")}, &scopeSelector)
 
-		rqAName := api.ResourceQuotaSingletonName + "-" + hrqA.Name
-		rqBName := api.ResourceQuotaSingletonName + "-" + hrqB.Name
+		rqAName := api.ResourceQuotaSingletonName + "-" + parentNs + "-" + hrqA.Name + "-" + md5Hash(parentNs+"/"+hrqA.Name)
+		rqBName := api.ResourceQuotaSingletonName + "-" + childNs + "-" + hrqB.Name + "-" + md5Hash(childNs+"/"+hrqB.Name)
 
 		FieldShouldContain("resourcequota", parentNs, rqAName, ".spec.hard", "pods:3")
+		FieldShouldContain("resourcequota", childNs, rqAName, ".spec.hard", "pods:3")
 		FieldShouldContain("resourcequota", childNs, rqBName, ".spec.hard", "pods:2")
 
 		expect := selectorStr(priorityName)
 		FieldShouldContain("resourcequota", parentNs, rqAName, ".spec.scopeSelector", expect)
+		FieldShouldContain("resourcequota", childNs, rqAName, ".spec.scopeSelector", expect)
 		FieldShouldContain("resourcequota", childNs, rqBName, ".spec.scopeSelector", expect)
 	})
 
 	It("should remove obsolete (empty) RQ if there's no longer a Scoped HRQ in the ancestor", func() {
 		hrq := setScopedHRQ("a-hrq", parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("3")}, &scopeSelector)
-		rqName := api.ResourceQuotaSingletonName + "-" + hrq.Name
+		rqName := api.ResourceQuotaSingletonName + "-" + parentNs + "-" + hrq.Name + "-" + md5Hash(parentNs+"/"+hrq.Name)
 
 		MustRun("kubectl delete hrq -n", parentNs, hrq.Name)
 
@@ -109,6 +114,24 @@ var _ = Describe("Scoped Hierarchical Resource Quota", Label("pfnet"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		FieldShouldContain("hrq", parentNs, hrq.Name, ".status.used", "pods:1")
+	})
+
+	It("should remove the legacy RQ", func() {
+		hrqName := "legacy-hrq"
+
+		// Legacy RQ remains before the new RQ is created
+		legacyRQ := mustCreateLegacyRQ(parentNs, hrqName, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("1")})
+		RunShouldContain(legacyRQ.Name, propagationTime, "kubectl get resourcequota -n", parentNs)
+
+		// Create the HRQ
+		setScopedHRQ(hrqName, parentNs, corev1.ResourceList{corev1.ResourcePods: resource.MustParse("1")}, &scopeSelector)
+
+		// Confirm the new RQ is created
+		newRQName := api.ResourceQuotaSingletonName + "-" + parentNs + "-" + hrqName + "-" + md5Hash(parentNs+"/"+hrqName)
+		RunShouldContain(newRQName, propagationTime, "kubectl get resourcequota -n", parentNs, newRQName)
+
+		// Legacy RQ is removed
+		RunShouldNotContain(legacyRQ.Name, propagationTime, "kubectl get resourcequota -n", parentNs)
 	})
 })
 
@@ -213,6 +236,32 @@ func createSubNS(parent, prefix string) string {
 	return nsName
 }
 
+func mustCreateLegacyRQ(ns, hrqName string, resourceList corev1.ResourceList) corev1.ResourceQuota {
+	hrq := corev1.ResourceQuota{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "ResourceQuota",
+			APIVersion: "v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      utils.LegacyScopedRQName(hrqName),
+			Namespace: ns,
+			Labels: map[string]string{
+				api.HRQLabelCleanup: "true",
+			},
+		},
+		Spec: corev1.ResourceQuotaSpec{
+			Hard: resourceList,
+		},
+	}
+	manifest, err := yaml.Marshal(hrq)
+	Expect(err).NotTo(HaveOccurred())
+
+	MustApplyYAML(string(manifest))
+	RunShouldContain(hrq.Name, propagationTime, "kubectl get resourcequota -n", ns, hrq.Name)
+
+	return hrq
+}
+
 func genPriorityScopeSelector() (corev1.ScopeSelector, string, func()) {
 	priority := uuid.New().String()
 	err := TryRun("kubectl create priorityclass", priority, "--value=100")
@@ -235,4 +284,9 @@ func genPriorityScopeSelector() (corev1.ScopeSelector, string, func()) {
 
 func selectorStr(priorityName string) string {
 	return "map[matchExpressions:[map[operator:In scopeName:PriorityClass values:[" + priorityName + "]]]]"
+}
+
+func md5Hash(s string) string {
+	hash := md5.Sum([]byte(s))
+	return hex.EncodeToString(hash[:])
 }

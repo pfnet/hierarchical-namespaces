@@ -96,7 +96,11 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 
 	rqName := api.ResourceQuotaSingletonName
 	if r.Forest.IsMarkedAsScopedHRQ(req.NamespacedName) {
-		rqName = utils.ScopedRQName(inst.GetName())
+		rqName, err = utils.ScopedRQName(inst.GetNamespace(), inst.GetName())
+		if err != nil {
+			log.Error(err, "Couldn't get the scoped RQ name")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Enqueue ResourceQuota objects in the current namespace and its descendants
@@ -116,6 +120,8 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 // forest. The first return value is true if the HRQ object is updated; the
 // second return value is true if the forest is updated.
 func (r *HierarchicalResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *api.HierarchicalResourceQuota) (bool, bool, error) {
+	var err error
+
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 
@@ -126,10 +132,16 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(log logr.Logger, in
 	if isScopedHRQ {
 		log.Info("Marking HRQ as scoped", "name", inst.GetName(), "namespace", inst.GetNamespace())
 		r.Forest.MarkScopedRQ(nn)
-		rqName = utils.ScopedRQName(inst.GetName())
+		rqName, err = utils.ScopedRQName(inst.GetNamespace(), inst.GetName())
+		if err != nil {
+			return false, false, err
+		}
 	} else if r.Forest.IsMarkedAsScopedHRQ(nn) {
 		log.Info("Detect the Scoped HRQ because of the mark")
-		rqName = utils.ScopedRQName(inst.GetName())
+		rqName, err = utils.ScopedRQName(inst.GetNamespace(), inst.GetName())
+		if err != nil {
+			return false, false, err
+		}
 	} else {
 		log.Info("HRQ is a singleton")
 	}
