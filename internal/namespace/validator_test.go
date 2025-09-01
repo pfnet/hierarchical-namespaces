@@ -6,7 +6,6 @@ import (
 	. "github.com/onsi/gomega"
 	k8sadm "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/config"
@@ -58,11 +57,14 @@ func TestDeleteSubNamespace(t *testing.T) {
 			vns := &Validator{Forest: f}
 
 			// Test
-			got := vns.handle(req)
+			err := vns.handleValidation(req)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).Should(HaveOccurred())
+			} else {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			}
 		})
 	}
 }
@@ -84,35 +86,31 @@ func TestDeleteOwnerNamespace(t *testing.T) {
 		}
 
 		// Test
-		got := vns.handle(req)
+		err := vns.handleValidation(req)
 		// Report - Shouldn't allow deleting the parent namespace.
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(BeFalse())
+		g.Expect(err).Should(HaveOccurred())
 
 		// Set allowCascadingDeletion on one child.
 		b.UpdateAllowCascadingDeletion(true)
 		// Test
-		got = vns.handle(req)
+		err = vns.handleValidation(req)
 		// Report - Still shouldn't allow deleting the parent namespace.
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(BeFalse())
+		g.Expect(err).Should(HaveOccurred())
 
 		// Set allowCascadingDeletion on the other child too.
 		c.UpdateAllowCascadingDeletion(true)
 		// Test
-		got = vns.handle(req)
+		err = vns.handleValidation(req)
 		// Report - Shouldn't allow deleting the parent namespace since parent namespace is not set to allow cascading deletion.
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(BeFalse())
+		g.Expect(err).Should(HaveOccurred())
 
 		// Unset allowCascadingDeletion on one child but set allowCascadingDeletion on the parent itself.
 		c.UpdateAllowCascadingDeletion(false)
 		a.UpdateAllowCascadingDeletion(true)
 		// Test
-		got = vns.handle(req)
+		err = vns.handleValidation(req)
 		// Report - Should allow deleting the parent namespace with allowCascadingDeletion set on it.
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(BeTrue())
+		g.Expect(err).ShouldNot(HaveOccurred())
 	})
 }
 
@@ -141,11 +139,10 @@ func TestCreateNamespace(t *testing.T) {
 		}
 
 		// Test
-		got := vns.handle(req)
+		err := vns.handleValidation(req)
 
 		// Report
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(BeFalse())
+		g.Expect(err).Should(HaveOccurred())
 	})
 }
 
@@ -209,11 +206,14 @@ func TestUpdateNamespaceManagedBy(t *testing.T) {
 			}
 
 			// Test
-			got := vns.handle(req)
+			err := vns.handleValidation(req)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).Should(HaveOccurred())
+			} else {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			}
 		})
 	}
 }
@@ -327,18 +327,18 @@ func TestIllegalIncludedNamespaceNamespace(t *testing.T) {
 			}
 
 			// Test
-			got := vns.handle(req)
+			err := vns.handleValidation(req)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).Should(HaveOccurred())
+			} else {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			}
 		})
 	}
 }
 
-func logResult(t *testing.T, result *metav1.Status) {
-	t.Logf("Got reason %q, code %d, msg %q", result.Reason, result.Code, result.Message)
-}
 func TestIllegalTreeOperations(t *testing.T) {
 	f := foresttest.Create("-")
 	vns := &Validator{Forest: f}
@@ -379,10 +379,13 @@ func TestIllegalTreeOperations(t *testing.T) {
 			}
 		}
 
-		got := vns.illegalTreeLabel(req)
+		err := vns.illegalTreeLabel(req)
 
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(Equal(tc.allowed))
+		if tc.allowed {
+			g.Expect(err).ShouldNot(HaveOccurred())
+		} else {
+			g.Expect(err).Should(HaveOccurred())
+		}
 	}
 
 }

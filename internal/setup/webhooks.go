@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	cert "github.com/open-policy-agent/cert-controller/pkg/rotator"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -109,13 +110,13 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	}
 
 	// Create webhook for the namespaces (core type).
-	{
-		handler := &ns.Validator{
-			Log:    ctrl.Log.WithName("namespace").WithName("validate"),
-			Forest: f,
-		}
-		handler.InjectDecoder(decoder)
-		mgr.GetWebhookServer().Register(ns.ServingPath, &webhook.Admission{Handler: handler})
+	nsValidator := ns.NewValidator(f)
+	if err := builder.WebhookManagedBy(mgr).
+		For(&corev1.Namespace{}).
+		WithCustomPath(ns.ServingPath).
+		WithValidator(nsValidator).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create webhook for namespace: %w", err)
 	}
 
 	// Create mutator for namespace `included-namespace` label.
