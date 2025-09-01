@@ -13,9 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/hierarchical-namespaces/internal/foresttest"
 
@@ -36,9 +34,7 @@ func TestType(t *testing.T) {
 	}
 	f := forest.NewForest()
 	f.AddTypeSyncer(r)
-	l := zap.New()
-	decoder := admission.NewDecoder(scheme.Scheme)
-	v := &Validator{Forest: f, Log: l, decoder: decoder}
+	v := &Validator{Forest: f}
 	config.SetNamespaces("", "kube-system")
 
 	tests := []struct {
@@ -142,7 +138,7 @@ func TestInheritedFromLabel(t *testing.T) {
 				oldObj: oldInst,
 				op:     k8sadm.Update,
 			}
-			got := v.handle(context.Background(), req)
+			got := v.handleRequest(context.Background(), req)
 
 			// Report
 			code := got.AdmissionResponse.Result.Code
@@ -667,7 +663,7 @@ func TestUserChanges(t *testing.T) {
 			c := fakeNSClient{isDeleting: tc.isDeleting}
 			v.client = c
 			// Test
-			got := v.handle(context.Background(), req)
+			got := v.handleRequest(context.Background(), req)
 			// Report
 			code := got.AdmissionResponse.Result.Code
 			reason := got.AdmissionResponse.Result.Reason
@@ -815,7 +811,7 @@ func TestCreatingConflictSource(t *testing.T) {
 				oldObj: &unstructured.Unstructured{},
 				op:     op,
 			}
-			got := v.handle(context.Background(), req)
+			got := v.handleRequest(context.Background(), req)
 			// Report
 			code := got.AdmissionResponse.Result.Code
 			reason := got.AdmissionResponse.Result.Reason

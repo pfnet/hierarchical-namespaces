@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	cert "github.com/open-policy-agent/cert-controller/pkg/rotator"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -75,14 +76,12 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	}
 
 	// Create webhooks for managed objects
-	{
-		handler := &objects.Validator{
-			Log:    ctrl.Log.WithName("objects").WithName("validate"),
-			Forest: f,
-		}
-		handler.InjectDecoder(decoder)
-		handler.InjectClient(mgr.GetClient())
-		mgr.GetWebhookServer().Register(objects.ServingPath, &webhook.Admission{Handler: handler})
+	if err := builder.WebhookManagedBy(mgr).
+		For(&unstructured.Unstructured{}).
+		WithCustomPath(objects.ServingPath).
+		WithValidator(objects.NewValidator(f, mgr.GetClient())).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create webhook for objects: %w", err)
 	}
 
 	// Create webhook for the config
