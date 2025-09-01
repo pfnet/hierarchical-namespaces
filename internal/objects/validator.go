@@ -13,11 +13,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
@@ -46,15 +44,10 @@ const (
 // +kubebuilder:webhook:admissionReviewVersions=v1,path=/validate-objects,mutating=false,failurePolicy=fail,groups="*",resources="*",sideEffects=None,verbs=create;update;delete,versions="*",name=objects.hnc.x-k8s.io
 
 type Validator struct {
-	Forest *forest.Forest
-	client client.Client
-}
-
-func NewValidator(forest *forest.Forest, client client.Client) *Validator {
-	return &Validator{
-		Forest: forest,
-		client: client,
-	}
+	Log     logr.Logger
+	Forest  *forest.Forest
+	client  client.Client
+	decoder admission.Decoder
 }
 
 type request struct {
@@ -73,95 +66,8 @@ func (req request) name() string {
 	return name.String()
 }
 
-func (v *Validator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	return v.handle(ctx, obj, nil, k8sadm.Create)
-}
-
-func (v *Validator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	return v.handle(ctx, nil, obj, k8sadm.Delete)
-}
-
-func (v *Validator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	return v.handle(ctx, newObj, oldObj, k8sadm.Update)
-}
-
-// handle implements the validation webhook.
-func (v *Validator) handle(ctx context.Context, obj, oldObj runtime.Object, op k8sadm.Operation) (admission.Warnings, error) {
-	req, err := admission.RequestFromContext(ctx)
-	if err != nil {
-		return nil, apierrors.NewInternalError(err)
-	}
-
-	log := admission.DefaultLogConstructor(logf.FromContext(ctx), &req)
-
-	// Convert runtime.Object to unstructured
-	var inst, oldInst *unstructured.Unstructured
-	if obj != nil {
-		var ok bool
-		inst, ok = obj.(*unstructured.Unstructured)
-		if !ok {
-			return nil, apierrors.NewInternalError(fmt.Errorf("expected an unstructured object but got a %T", obj))
-		}
-	}
-	if oldObj != nil {
-		var ok bool
-		oldInst, ok = oldObj.(*unstructured.Unstructured)
-		if !ok {
-			return nil, apierrors.NewInternalError(fmt.Errorf("expected an unstructured object but got a %T", oldObj))
-		}
-	}
-
-	// Early exit for unmanaged namespaces
-	namespace := req.Namespace
-	if inst != nil {
-		namespace = inst.GetNamespace()
-	} else if oldInst != nil {
-		namespace = oldInst.GetNamespace()
-	}
-
-	// Before even looking at the objects, early-exit for any changes we shouldn't be involved in.
-	// This reduces the chance we'll hose some aspect of the cluster we weren't supposed to touch.
-	//
-	// Firstly, skip namespaces we're excluded from (like kube-system).
-	// Note: This is added just in case the "hnc.x-k8s.io/excluded-namespace=true"
-	// label is not added on the excluded namespaces. VWHConfiguration of this VWH
-	// already has a `namespaceSelector` to exclude namespaces with the label.
-	if !config.IsManagedNamespace(namespace) {
-		return nil, nil
-	}
-	// Allow changes to the types that are not in Propagate or AllowPropagate mode. This is to dynamically enable/disable
-	// object webhooks based on the types configured in hncconfig. Since the current admission rules only
-	// apply to propagated objects, we can disable object webhooks on all other non-propagate-mode types.
-	if !v.canPropagateType(req.Kind) {
-		return nil, nil
-	}
-	// Finally, let the HNC SA do whatever it wants.
-	if webhooks.IsHNCServiceAccount(&req.UserInfo) {
-		log.V(1).Info("Allowed change by HNC SA")
-		return nil, nil
-	}
-
-	// Create request for backward compatibility with existing handle logic
-	reqObj := &request{
-		obj:    inst,
-		oldObj: oldInst,
-		op:     op,
-		gvr:    req.Resource,
-	}
-
-	// Run the actual logic.
-	resp := v.handleRequest(ctx, reqObj)
-	if !resp.Allowed {
-		log.Info("Denied", "code", resp.Result.Code, "reason", resp.Result.Reason, "message", resp.Result.Message)
-		return nil, responseToError(resp)
-	} else {
-		log.V(1).Info("Allowed", "message", resp.Result.Message)
-	}
-	return nil, nil
-}
-
 func (v *Validator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := logf.FromContext(ctx).WithValues("resource", req.Resource, "ns", req.Namespace, "nm", req.Name, "op", req.Operation, "user", req.UserInfo.Username)
+	log := v.Log.WithValues("resource", req.Resource, "ns", req.Namespace, "nm", req.Name, "op", req.Operation, "user", req.UserInfo.Username)
 
 	// Before even looking at the objects, early-exit for any changes we shouldn't be involved in.
 	// This reduces the chance we'll hose some aspect of the cluster we weren't supposed to touch.
@@ -191,7 +97,7 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 	}
 
 	// Run the actual logic.
-	resp := v.handleRequest(ctx, decoded)
+	resp := v.handle(ctx, decoded)
 	if !resp.Allowed {
 		log.Info("Denied", "code", resp.Result.Code, "reason", resp.Result.Reason, "message", resp.Result.Message)
 	} else {
@@ -222,9 +128,9 @@ func (v *Validator) canPropagateType(gvk metav1.GroupVersionKind) bool {
 	return (v.isPropagateType(gvk) || v.isAllowPropagateType(gvk))
 }
 
-// handleRequest implements the non-webhook-y businesss logic of this validator, allowing it to be more
+// handle implements the non-webhook-y businesss logic of this validator, allowing it to be more
 // easily unit tested (ie without constructing an admission.Request, setting up user infos, etc).
-func (v *Validator) handleRequest(ctx context.Context, req *request) admission.Response {
+func (v *Validator) handle(ctx context.Context, req *request) admission.Response {
 	inst := req.obj
 	oldInst := req.oldObj
 
@@ -486,36 +392,21 @@ func (v *Validator) hasConflict(inst *unstructured.Unstructured) (bool, []string
 	return len(conflicts) != 0, conflicts
 }
 
-func responseToError(resp admission.Response) error {
-	if resp.Allowed {
-		return nil
-	}
-	status := resp.Result
-	if status == nil {
-		return fmt.Errorf("request denied")
-	}
-	return apierrors.FromObject(status)
-}
-
 func (v *Validator) decodeRequest(log logr.Logger, req admission.Request) (*request, error) {
 	// Decode the old and new object, if we expect them to exist ("old" won't exist for creations,
 	// while "new" won't exist for deletions).
 	inst := &unstructured.Unstructured{}
 	oldInst := &unstructured.Unstructured{}
 	if req.Operation != k8sadm.Delete {
-		if req.Object.Raw != nil {
-			if err := inst.UnmarshalJSON(req.Object.Raw); err != nil {
-				log.Error(err, "Couldn't decode req.Object", "raw", req.Object)
-				return nil, fmt.Errorf("while decoding object: %w", err)
-			}
+		if err := v.decoder.Decode(req, inst); err != nil {
+			log.Error(err, "Couldn't decode req.Object", "raw", req.Object)
+			return nil, fmt.Errorf("while decoding object: %w", err)
 		}
 	}
 	if req.Operation != k8sadm.Create {
-		if req.OldObject.Raw != nil {
-			if err := oldInst.UnmarshalJSON(req.OldObject.Raw); err != nil {
-				log.Error(err, "Couldn't decode req.OldObject", "raw", req.OldObject)
-				return nil, fmt.Errorf("while decoding old object: %w", err)
-			}
+		if err := v.decoder.DecodeRaw(req.OldObject, oldInst); err != nil {
+			log.Error(err, "Couldn't decode req.OldObject", "raw", req.OldObject)
+			return nil, fmt.Errorf("while decoding old object: %w", err)
 		}
 	}
 
@@ -529,5 +420,10 @@ func (v *Validator) decodeRequest(log logr.Logger, req admission.Request) (*requ
 
 func (v *Validator) InjectClient(c client.Client) error {
 	v.client = c
+	return nil
+}
+
+func (v *Validator) InjectDecoder(d admission.Decoder) error {
+	v.decoder = d
 	return nil
 }
