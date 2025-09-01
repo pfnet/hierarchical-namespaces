@@ -120,12 +120,13 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	}
 
 	// Create mutator for namespace `included-namespace` label.
-	{
-		handler := &ns.Mutator{
-			Log: ctrl.Log.WithName("namespace").WithName("mutate"),
-		}
-		handler.InjectDecoder(decoder)
-		mgr.GetWebhookServer().Register(ns.MutatorServingPath, &webhook.Admission{Handler: handler})
+	nsMutator := ns.NewMutator()
+	if err := builder.WebhookManagedBy(mgr).
+		For(&corev1.Namespace{}).
+		WithCustomPath(ns.MutatorServingPath).
+		WithDefaulter(nsMutator).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create mutator webhook for namespace: %w", err)
 	}
 
 	if opts.HRQ {
