@@ -79,7 +79,11 @@ func TestManagedMeta(t *testing.T) {
 			hc.Spec.Annotations = tc.annotations
 
 			_, err := h.handle(newContext(t.Context()), hc)
-			g.Expect(err).To(Succeed())
+			if tc.allowed {
+				g.Expect(err).To(Succeed())
+			} else {
+				g.Expect(err).To(HaveOccurred())
+			}
 		})
 	}
 }
