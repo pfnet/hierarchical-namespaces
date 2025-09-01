@@ -86,14 +86,16 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	}
 
 	// Create webhook for the config
-	{
-		handler := &hncconfig.Validator{
-			Log:    ctrl.Log.WithName("hncconfig").WithName("validate"),
-			Forest: f,
-		}
-		handler.InjectDecoder(decoder)
-		handler.InjectConfig(mgr.GetConfig())
-		mgr.GetWebhookServer().Register(hncconfig.ServingPath, &webhook.Admission{Handler: handler})
+	hnconfigValidator := hncconfig.NewValidator(f, mgr.GetClient())
+	if err := hnconfigValidator.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup hncconfig validator: %w", err)
+	}
+	if err := builder.WebhookManagedBy(mgr).
+		For(&api.HNCConfiguration{}).
+		WithCustomPath(hncconfig.ServingPath).
+		WithValidator(hnconfigValidator).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create webhook for hncconfig: %w", err)
 	}
 
 	// Create webhook for the subnamespace anchors.

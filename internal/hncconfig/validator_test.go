@@ -8,7 +8,6 @@ import (
 
 	. "github.com/onsi/gomega"
 	k8sadm "k8s.io/api/admission/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -32,32 +31,33 @@ var (
 func TestDeletingConfigObject(t *testing.T) {
 	t.Run("Delete config object", func(t *testing.T) {
 		g := NewWithT(t)
-		req := admission.Request{AdmissionRequest: k8sadm.AdmissionRequest{
+		ctx := admission.NewContextWithRequest(context.Background(), admission.Request{AdmissionRequest: k8sadm.AdmissionRequest{
 			Operation: k8sadm.Delete,
 			Name:      api.HNCConfigSingleton,
-		}}
+		}})
 		validator := &Validator{Log: zap.New()}
+		hc := &api.HNCConfiguration{}
 
-		got := validator.Handle(context.Background(), req)
+		_, err := validator.ValidateDelete(ctx, hc)
 
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(BeFalse())
+		g.Expect(err).Should(HaveOccurred())
+		g.Expect(err.Error()).Should(ContainSubstring("deleting the 'config' object is forbidden"))
 	})
 }
 
 func TestDeletingOtherObject(t *testing.T) {
-	t.Run("Delete config object", func(t *testing.T) {
+	t.Run("Delete other object", func(t *testing.T) {
 		g := NewWithT(t)
-		req := admission.Request{AdmissionRequest: k8sadm.AdmissionRequest{
+		ctx := admission.NewContextWithRequest(context.Background(), admission.Request{AdmissionRequest: k8sadm.AdmissionRequest{
 			Operation: k8sadm.Delete,
 			Name:      "other",
-		}}
+		}})
 		validator := &Validator{Log: zap.New()}
+		hc := &api.HNCConfiguration{}
 
-		got := validator.Handle(context.Background(), req)
+		_, err := validator.ValidateDelete(ctx, hc)
 
-		logResult(t, got.AdmissionResponse.Result)
-		g.Expect(got.AdmissionResponse.Allowed).Should(BeTrue())
+		g.Expect(err).ShouldNot(HaveOccurred())
 	})
 }
 
@@ -95,10 +95,13 @@ func TestRBACTypes(t *testing.T) {
 			c := &api.HNCConfiguration{Spec: api.HNCConfigurationSpec{Resources: tc.configs}}
 			c.Name = api.HNCConfigSingleton
 
-			got := validator.handle(c)
+			err := validator.validateInstance(c)
 
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).Should(Equal(tc.allow))
+			if tc.allow {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			} else {
+				g.Expect(err).Should(HaveOccurred())
+			}
 		})
 	}
 }
@@ -157,10 +160,13 @@ func TestNonRBACTypes(t *testing.T) {
 				Log:    zap.New(),
 			}
 
-			got := validator.handle(c)
+			err := validator.validateInstance(c)
 
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).Should(Equal(tc.allow))
+			if tc.allow {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			} else {
+				g.Expect(err).Should(HaveOccurred())
+			}
 		})
 	}
 }
@@ -224,12 +230,16 @@ func TestPropagateConflict(t *testing.T) {
 				}
 				f.Get(string(ns)).SetSourceObject(inst)
 			}
-			got := validator.handle(c)
+			err := validator.validateInstance(c)
 
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).Should(Equal(tc.allow))
+			if tc.allow {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			} else {
+				g.Expect(err).Should(HaveOccurred())
+			}
 			if tc.errContain != "" {
-				g.Expect(strings.Contains(got.AdmissionResponse.Result.Message, tc.errContain))
+				g.Expect(err).Should(HaveOccurred())
+				g.Expect(err.Error()).Should(ContainSubstring(tc.errContain))
 			}
 		})
 	}
@@ -248,6 +258,3 @@ func (f fakeResourceMapper) NamespacedKindFor(gr schema.GroupResource) (schema.G
 	return gr2gvk[gr], nil
 }
 
-func logResult(t *testing.T, result *metav1.Status) {
-	t.Logf("Got reason %q, code %d, msg %q", result.Reason, result.Code, result.Message)
-}
