@@ -5,7 +5,6 @@ import (
 
 	. "github.com/onsi/gomega"
 	k8sadm "k8s.io/api/admission/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/config"
@@ -47,11 +46,14 @@ func TestCreateSubnamespaces(t *testing.T) {
 			}
 
 			// Test
-			got := v.handle(req)
+			err := v.handleValidation(req)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).Should(HaveOccurred())
+			} else {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			}
 		})
 	}
 }
@@ -82,11 +84,14 @@ func TestDeleteSubnamespaces(t *testing.T) {
 			}
 
 			// Test
-			got := v.handle(req)
+			err := v.handleValidation(req)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).Should(HaveOccurred())
+			} else {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			}
 		})
 	}
 }
@@ -152,11 +157,14 @@ func TestManagedMeta(t *testing.T) {
 			}
 
 			// Test
-			got := v.handle(req)
+			err := v.handleValidation(req)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).Should(Equal(tc.allowed))
+			if tc.allowed {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			} else {
+				g.Expect(err).Should(HaveOccurred())
+			}
 		})
 	}
 }
@@ -207,15 +215,14 @@ func TestAllowCascadingDeleteSubnamespaces(t *testing.T) {
 			}
 
 			// Test
-			got := v.handle(req)
+			err := v.handleValidation(req)
 
 			// Report
-			logResult(t, got.AdmissionResponse.Result)
-			g.Expect(got.AdmissionResponse.Allowed).ShouldNot(Equal(tc.fail))
+			if tc.fail {
+				g.Expect(err).Should(HaveOccurred())
+			} else {
+				g.Expect(err).ShouldNot(HaveOccurred())
+			}
 		})
 	}
-}
-
-func logResult(t *testing.T, result *metav1.Status) {
-	t.Logf("Got reason %q, code %d, msg %q", result.Reason, result.Code, result.Message)
 }

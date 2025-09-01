@@ -99,13 +99,13 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	}
 
 	// Create webhook for the subnamespace anchors.
-	{
-		handler := &anchor.Validator{
-			Log:    ctrl.Log.WithName("anchor").WithName("validate"),
-			Forest: f,
-		}
-		handler.InjectDecoder(decoder)
-		mgr.GetWebhookServer().Register(anchor.ServingPath, &webhook.Admission{Handler: handler})
+	anchorValidator := anchor.NewValidator(f)
+	if err := builder.WebhookManagedBy(mgr).
+		For(&api.SubnamespaceAnchor{}).
+		WithCustomPath(anchor.ServingPath).
+		WithValidator(anchorValidator).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create webhook for anchor: %w", err)
 	}
 
 	// Create webhook for the namespaces (core type).
