@@ -13,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
@@ -38,16 +37,14 @@ type Validator struct {
 	Log    logr.Logger
 	Forest *forest.Forest
 	mapper resourceMapper
-	client client.Client
 }
 
 type gvkSet map[schema.GroupVersionKind]api.SynchronizationMode
 
-func NewValidator(forest *forest.Forest, client client.Client) *Validator {
+func NewValidator(forest *forest.Forest) *Validator {
 	return &Validator{
 		Log:    ctrl.Log.WithName("hncconfig").WithName("validate"),
 		Forest: forest,
-		client: client,
 	}
 }
 

@@ -257,4 +257,3 @@ func (f fakeResourceMapper) NamespacedKindFor(gr schema.GroupResource) (schema.G
 	}
 	return gr2gvk[gr], nil
 }
-

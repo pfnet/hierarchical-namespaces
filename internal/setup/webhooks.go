@@ -87,7 +87,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	}
 
 	// Create webhook for the config
-	hnconfigValidator := hncconfig.NewValidator(f, mgr.GetClient())
+	hnconfigValidator := hncconfig.NewValidator(f)
 	if err := hnconfigValidator.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to setup hncconfig validator: %w", err)
 	}
