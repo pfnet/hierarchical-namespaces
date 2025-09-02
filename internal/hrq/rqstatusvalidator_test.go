@@ -65,9 +65,9 @@ func TestRQStatusChange(t *testing.T) {
 			usage, _ := f.Get(tc.namespace).GetLocalUsages(api.ResourceQuotaSingletonName)
 			rqInst.Status.Used = utils.Add(delta, usage)
 
-			got := rqs.handle(rqInst)
-			if got.AdmissionResponse.Allowed == tc.fail {
-				t.Errorf("unexpected admission response")
+			err = rqs.validateHRQResourceQuotaStatus(rqInst)
+			if (err != nil) != tc.fail {
+				t.Errorf("unexpected validation result: got error=%v, expected failure=%v", err, tc.fail)
 			}
 		})
 	}

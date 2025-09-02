@@ -2,13 +2,17 @@ package hrq
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/go-logr/logr"
 	k8sadm "k8s.io/api/admission/v1"
 	authnv1 "k8s.io/api/authentication/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -34,14 +38,50 @@ const (
 type ResourceQuotaStatus struct {
 	Log    logr.Logger
 	Forest *forest.Forest
-
-	client  client.Client
-	decoder admission.Decoder
+	client client.Client
 }
 
-func (r *ResourceQuotaStatus) Handle(ctx context.Context, req admission.Request) admission.Response {
+func NewResourceQuotaStatus(forest *forest.Forest, client client.Client) *ResourceQuotaStatus {
+	return &ResourceQuotaStatus{
+		Log:    ctrl.Log.WithName("validators").WithName("ResourceQuota"),
+		Forest: forest,
+		client: client,
+	}
+}
+
+func (r *ResourceQuotaStatus) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	// ResourceQuota creation doesn't need validation for our purposes
+	return nil, nil
+}
+
+func (r *ResourceQuotaStatus) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, apierrors.NewInternalError(err)
+	}
+
 	log := logutils.WithRID(r.Log).WithValues("nm", req.Name, "nnm", req.Namespace)
 
+	rq, ok := newObj.(*v1.ResourceQuota)
+	if !ok {
+		return nil, apierrors.NewInternalError(fmt.Errorf("expected a ResourceQuota but got a %T", newObj))
+	}
+
+	if err := r.validateResourceQuotaStatus(ctx, log, &req.UserInfo, rq); err != nil {
+		log.Info("Denied", "reason", err)
+		return nil, err
+	}
+
+	log.V(1).Info("Allowed")
+	return nil, nil
+}
+
+func (r *ResourceQuotaStatus) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	// ResourceQuota deletion doesn't need validation for our purposes
+	return nil, nil
+}
+
+func (r *ResourceQuotaStatus) validateResourceQuotaStatus(_ context.Context, log logr.Logger, userInfo *authnv1.UserInfo, inst *v1.ResourceQuota) error {
 	// We only intercept and validate the HRQ-singleton RQ status changes from the
 	// K8s Resource Quota Admission Controller. Once the admission controller
 	// allows a request, it will issue a request to update the RQ status. We can
@@ -49,53 +89,40 @@ func (r *ResourceQuotaStatus) Handle(ctx context.Context, req admission.Request)
 	// (or denying) status update requests from the admission controller.
 	//
 	// Thus we will allow any non-HRQ-singleton RQ updates first.
-	if !strings.Contains(req.Name, api.ResourceQuotaSingletonName) {
-		return allow("non-HRQ-singleton RQ status change ignored")
+	if !strings.Contains(inst.Name, api.ResourceQuotaSingletonName) {
+		log.V(1).Info("non-HRQ-singleton RQ status change ignored")
+		return nil
 	}
 
 	// Then for HRQ-singleton RQ status updates, we will allow any request
 	// attempted by other than K8s Resource Quota Admission Controller.
-	if !isResourceQuotaAdmissionControllerServiceAccount(&req.UserInfo) {
+	if !isResourceQuotaAdmissionControllerServiceAccount(userInfo) {
 		log.V(1).Info("Request is not from Kubernetes Resource Quota Admission Controller; Allowed")
-		return allow("")
+		return nil
 	}
 
-	inst := &v1.ResourceQuota{}
-	if err := r.decoder.Decode(req, inst); err != nil {
-		log.Error(err, "Couldn't decode request")
-		return deny(metav1.StatusReasonBadRequest, err.Error())
-	}
-
-	resp := r.handle(inst)
-	if resp.Allowed {
-		log.V(1).Info("Allowed", "message", resp.Result.Message, "usages", inst.Status.Used)
-	} else {
-		log.Info("Denied", "code", resp.Result.Code, "reason", resp.Result.Reason, "message", resp.Result.Message, "usages", inst.Status.Used)
-	}
-	return resp
+	return r.validateHRQResourceQuotaStatus(inst)
 }
 
-func (r *ResourceQuotaStatus) handle(inst *v1.ResourceQuota) admission.Response {
+func (r *ResourceQuotaStatus) validateHRQResourceQuotaStatus(inst *v1.ResourceQuota) error {
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 
 	ns := r.Forest.Get(inst.Namespace)
 	if err := ns.TryUseResources(inst.Status.Used, inst.GetName()); err != nil {
-		return deny(metav1.StatusReasonForbidden, err.Error())
+		return apierrors.NewForbidden(v1.Resource("resourcequotas"), inst.Name, err)
 	}
 
-	return allow("the usage update is in compliance with the ancestors' (including itself) HRQs")
-}
-
-func (r *ResourceQuotaStatus) InjectClient(c client.Client) error {
-	r.client = c
 	return nil
 }
 
-func (r *ResourceQuotaStatus) InjectDecoder(d admission.Decoder) error {
-	r.decoder = d
-	return nil
+func isResourceQuotaAdmissionControllerServiceAccount(user *authnv1.UserInfo) bool {
+	// Treat nil user same as admission controller SA so that unit tests do not need to
+	// specify admission controller SA.
+	return user == nil || user.Username == ResourceQuotaAdmissionControllerUsername
 }
+
+// Helper functions for admission responses - these are shared between hrqvalidator.go and rqstatusvalidator.go
 
 // allow is a replacement for controller-runtime's admission.Allowed() that allows you to set the
 // message (human-readable) as opposed to the reason (machine-readable).
@@ -107,12 +134,6 @@ func allow(msg string) admission.Response {
 			Message: msg,
 		},
 	}}
-}
-
-func isResourceQuotaAdmissionControllerServiceAccount(user *authnv1.UserInfo) bool {
-	// Treat nil user same as admission controller SA so that unit tests do not need to
-	// specify admission controller SA.
-	return user == nil || user.Username == ResourceQuotaAdmissionControllerUsername
 }
 
 // deny is a replacement for controller-runtime's admission.Denied() that allows you to set _both_ a
