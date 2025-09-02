@@ -131,24 +131,23 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 
 	if opts.HRQ {
 		// Create webhook for ResourceQuota status.
-		{
-			handler := &hrq.ResourceQuotaStatus{
-				Log:    ctrl.Log.WithName("validators").WithName("ResourceQuota"),
-				Forest: f,
-			}
-			handler.InjectDecoder(decoder)
-			handler.InjectClient(mgr.GetClient())
-			mgr.GetWebhookServer().Register(hrq.ResourceQuotasStatusServingPath, &webhook.Admission{Handler: handler})
+		rqStatusValidator := hrq.NewResourceQuotaStatus(f, mgr.GetClient())
+		if err := builder.WebhookManagedBy(mgr).
+			For(&corev1.ResourceQuota{}).
+			WithCustomPath(hrq.ResourceQuotasStatusServingPath).
+			WithValidator(rqStatusValidator).
+			Complete(); err != nil {
+			return fmt.Errorf("failed to create webhook for ResourceQuota status: %w", err)
 		}
 
 		// Create webhook for HierarchicalResourceQuota spec.
-		{
-			handler := &hrq.HRQ{
-				Log: ctrl.Log.WithName("validators").WithName("HierarchicalResourceQuota"),
-			}
-			handler.InjectDecoder(decoder)
-			handler.InjectClient(mgr.GetClient())
-			mgr.GetWebhookServer().Register(hrq.HRQServingPath, &webhook.Admission{Handler: handler})
+		hrqValidator := hrq.NewHRQ(mgr.GetClient())
+		if err := builder.WebhookManagedBy(mgr).
+			For(&api.HierarchicalResourceQuota{}).
+			WithCustomPath(hrq.HRQServingPath).
+			WithValidator(hrqValidator).
+			Complete(); err != nil {
+			return fmt.Errorf("failed to create webhook for HierarchicalResourceQuota: %w", err)
 		}
 	}
 
