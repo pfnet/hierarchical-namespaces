@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['**.md']
+  pull_request:
+    types: [opened, synchronize]
+    paths-ignore: ['**.md']
+
+env:
+  KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT: 120s
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Ensure go.mod is already tidied
+      run: go mod tidy && git diff -s --exit-code go.sum
+    - run: make all

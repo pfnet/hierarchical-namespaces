@@ -7,6 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"sigs.k8s.io/hierarchical-namespaces/internal/anchor"
 	"sigs.k8s.io/hierarchical-namespaces/internal/config"
@@ -57,51 +58,93 @@ func ManageCerts(mgr ctrl.Manager, setupFinished chan struct{}, restartOnSecretR
 
 // createWebhooks creates all mutators and validators.
 func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) {
+	decoder := admission.NewDecoder(mgr.GetScheme())
+
+	// NOTE(ryotarai): The injecting mechanism is removed in https://github.com/kubernetes-sigs/controller-runtime/pull/2134
+	// For now, the decoder and client are injected manually, but we might want to replace this with sigs.k8s.io/controller-runtime/pkg/builder.WebhookManagedBy
+
 	// Create webhook for Hierarchy
-	mgr.GetWebhookServer().Register(hierarchyconfig.ServingPath, &webhook.Admission{Handler: &hierarchyconfig.Validator{
-		Log:    ctrl.Log.WithName("hierarchyconfig").WithName("validate"),
-		Forest: f,
-	}})
+	{
+		handler := &hierarchyconfig.Validator{
+			Log:    ctrl.Log.WithName("hierarchyconfig").WithName("validate"),
+			Forest: f,
+		}
+		handler.InjectDecoder(decoder)
+		handler.InjectClient(mgr.GetClient())
+		mgr.GetWebhookServer().Register(hierarchyconfig.ServingPath, &webhook.Admission{Handler: handler})
+	}
 
 	// Create webhooks for managed objects
-	mgr.GetWebhookServer().Register(objects.ServingPath, &webhook.Admission{Handler: &objects.Validator{
-		Log:    ctrl.Log.WithName("objects").WithName("validate"),
-		Forest: f,
-	}})
+	{
+		handler := &objects.Validator{
+			Log:    ctrl.Log.WithName("objects").WithName("validate"),
+			Forest: f,
+		}
+		handler.InjectDecoder(decoder)
+		handler.InjectClient(mgr.GetClient())
+		mgr.GetWebhookServer().Register(objects.ServingPath, &webhook.Admission{Handler: handler})
+	}
 
 	// Create webhook for the config
-	mgr.GetWebhookServer().Register(hncconfig.ServingPath, &webhook.Admission{Handler: &hncconfig.Validator{
-		Log:    ctrl.Log.WithName("hncconfig").WithName("validate"),
-		Forest: f,
-	}})
+	{
+		handler := &hncconfig.Validator{
+			Log:    ctrl.Log.WithName("hncconfig").WithName("validate"),
+			Forest: f,
+		}
+		handler.InjectDecoder(decoder)
+		handler.InjectConfig(mgr.GetConfig())
+		mgr.GetWebhookServer().Register(hncconfig.ServingPath, &webhook.Admission{Handler: handler})
+	}
 
 	// Create webhook for the subnamespace anchors.
-	mgr.GetWebhookServer().Register(anchor.ServingPath, &webhook.Admission{Handler: &anchor.Validator{
-		Log:    ctrl.Log.WithName("anchor").WithName("validate"),
-		Forest: f,
-	}})
+	{
+		handler := &anchor.Validator{
+			Log:    ctrl.Log.WithName("anchor").WithName("validate"),
+			Forest: f,
+		}
+		handler.InjectDecoder(decoder)
+		mgr.GetWebhookServer().Register(anchor.ServingPath, &webhook.Admission{Handler: handler})
+	}
 
 	// Create webhook for the namespaces (core type).
-	mgr.GetWebhookServer().Register(ns.ServingPath, &webhook.Admission{Handler: &ns.Validator{
-		Log:    ctrl.Log.WithName("namespace").WithName("validate"),
-		Forest: f,
-	}})
+	{
+		handler := &ns.Validator{
+			Log:    ctrl.Log.WithName("namespace").WithName("validate"),
+			Forest: f,
+		}
+		handler.InjectDecoder(decoder)
+		mgr.GetWebhookServer().Register(ns.ServingPath, &webhook.Admission{Handler: handler})
+	}
 
 	// Create mutator for namespace `included-namespace` label.
-	mgr.GetWebhookServer().Register(ns.MutatorServingPath, &webhook.Admission{Handler: &ns.Mutator{
-		Log: ctrl.Log.WithName("namespace").WithName("mutate"),
-	}})
+	{
+		handler := &ns.Mutator{
+			Log: ctrl.Log.WithName("namespace").WithName("mutate"),
+		}
+		handler.InjectDecoder(decoder)
+		mgr.GetWebhookServer().Register(ns.MutatorServingPath, &webhook.Admission{Handler: handler})
+	}
 
 	if opts.HRQ {
 		// Create webhook for ResourceQuota status.
-		mgr.GetWebhookServer().Register(hrq.ResourceQuotasStatusServingPath, &webhook.Admission{Handler: &hrq.ResourceQuotaStatus{
-			Log:    ctrl.Log.WithName("validators").WithName("ResourceQuota"),
-			Forest: f,
-		}})
+		{
+			handler := &hrq.ResourceQuotaStatus{
+				Log:    ctrl.Log.WithName("validators").WithName("ResourceQuota"),
+				Forest: f,
+			}
+			handler.InjectDecoder(decoder)
+			handler.InjectClient(mgr.GetClient())
+			mgr.GetWebhookServer().Register(hrq.ResourceQuotasStatusServingPath, &webhook.Admission{Handler: handler})
+		}
 
 		// Create webhook for HierarchicalResourceQuota spec.
-		mgr.GetWebhookServer().Register(hrq.HRQServingPath, &webhook.Admission{Handler: &hrq.HRQ{
-			Log: ctrl.Log.WithName("validators").WithName("HierarchicalResourceQuota"),
-		}})
+		{
+			handler := &hrq.HRQ{
+				Log: ctrl.Log.WithName("validators").WithName("HierarchicalResourceQuota"),
+			}
+			handler.InjectDecoder(decoder)
+			handler.InjectClient(mgr.GetClient())
+			mgr.GetWebhookServer().Register(hrq.HRQServingPath, &webhook.Admission{Handler: handler})
+		}
 	}
 }

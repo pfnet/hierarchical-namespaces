@@ -7,7 +7,7 @@ import (
 	. "sigs.k8s.io/hierarchical-namespaces/pkg/testutils"
 )
 
-var _ = Describe("When deleting CRDs", func() {
+var _ = Describe("When deleting CRDs", Serial, func() {
 
 	const (
 		nsParent = "delete-crd-parent"

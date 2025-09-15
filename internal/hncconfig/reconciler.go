@@ -497,7 +497,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Whenever a CRD is created/updated, we will send a request to reconcile the singleton again, in
 	// case the singleton has configuration for the custom resource type.
-	crdMapFn := func(_ client.Object) []reconcile.Request {
+	crdMapFn := func(ctx context.Context, _ client.Object) []reconcile.Request {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{
 			Name: api.HNCConfigSingleton,
 		}}}
@@ -506,9 +506,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Register the reconciler
 	err = ctrl.NewControllerManagedBy(mgr).
 		For(&api.HNCConfiguration{}).
-		Watches(&source.Channel{Source: r.trigger}, &handler.EnqueueRequestForObject{}).
-		Watches(&source.Kind{Type: &apiextensions.CustomResourceDefinition{}},
-			handler.EnqueueRequestsFromMapFunc(crdMapFn)).
+		WatchesRawSource(source.Channel(r.trigger, &handler.EnqueueRequestForObject{})).
+		Watches(&apiextensions.CustomResourceDefinition{}, handler.EnqueueRequestsFromMapFunc(crdMapFn)).
 		Complete(r)
 	if err != nil {
 		return err

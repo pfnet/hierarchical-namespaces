@@ -30,11 +30,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
@@ -796,6 +798,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, maxReconciles int) error
 	target.SetGroupVersionKind(r.GVK)
 	opts := controller.Options{
 		MaxConcurrentReconciles: maxReconciles,
+		SkipNameValidation:      ptr.To(true),
 
 		// Unlike the other HNC reconcilers, the object reconciler can easily be affected by objects
 		// that do not directly cause reconciliations when they're modified - see, e.g.,
@@ -807,11 +810,11 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, maxReconciles int) error
 		// the default etcd timeout is 10s, which apparently is a more realistic measure of how K8s can
 		// behave under heavy load, so I raised it to 10s during the PR review. The _average_ delay seen
 		// by users should still be about 5s though.
-		RateLimiter: workqueue.NewItemExponentialFailureRateLimiter(250*time.Millisecond, 10*time.Second),
+		RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](250*time.Millisecond, 10*time.Second),
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(target).
-		Watches(&source.Channel{Source: r.Affected}, &handler.EnqueueRequestForObject{}).
+		WatchesRawSource(source.Channel(r.Affected, &handler.EnqueueRequestForObject{})).
 		WithOptions(opts).
 		Complete(r)
 }

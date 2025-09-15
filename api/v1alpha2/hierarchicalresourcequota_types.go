@@ -48,10 +48,21 @@ type HierarchicalResourceQuotaStatus struct {
 	// and its descendant namespaces.
 	// +optional
 	Used corev1.ResourceList `json:"used,omitempty"`
+	// RequestsSummary is used by kubectl get hrq, and summarizes the relevant information
+	// from .status.hard.requests and .status.used.requests.
+	// +optional
+	RequestsSummary string `json:"requestsSummary,omitempty"`
+	// LimitsSummary is used by kubectl get hrq, and summarizes the relevant information
+	// from .status.hard.limits and .status.used.limits.
+	// +optional
+	LimitsSummary string `json:"limitsSummary,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=hierarchicalresourcequotas,shortName=hrq,scope=Namespaced
+// +kubebuilder:printcolumn:name="REQUEST",type="string",JSONPath=".status.requestsSummary",description="Current usage of resources"
+// +kubebuilder:printcolumn:name="LIMIT",type="string",JSONPath=".status.limitsSummary",description="Resource limits"
+// +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 
 // HierarchicalResourceQuota sets aggregate quota restrictions enforced for a
 // namespace and descendant namespaces

@@ -202,6 +202,34 @@ teams, and those teams can distribute their resources between their subteams.
 
 Note: Decimal point values cannot be specified in HRQ (you can't do `cpu: 1.5` but you can do `cpu: "1.5"` or `cpu: 1500m`). See [#292](https://github.com/kubernetes-sigs/hierarchical-namespaces/issues/292)
 
+#### Using Scoped HRQs
+
+In addition to regular HRQs that apply to all resources, you can create **scoped HRQs** that only apply to resources matching specific criteria. This enables more sophisticated resource management strategies within a single namespace hierarchy.
+
+- Multiple scoped HRQs can exist in the same namespace hierarchy
+- Each scoped HRQ operates independently and only affects matching resources
+
+**Creating a scoped HRQ:**
+
+```yaml
+apiVersion: hnc.x-k8s.io/v1alpha2
+kind: HierarchicalResourceQuota
+metadata:
+  name: production-workloads
+  namespace: team-namespace
+spec:
+  hard:
+    cpu: "20"
+    memory: "40Gi"
+  scopeSelector:
+    matchExpressions:
+    - operator: In
+      scopeName: PriorityClass
+      values: ["production"]
+```
+
+The `scopeSelector` field works exactly like the standard Kubernetes ResourceQuota `scopeSelector`. For details on available scopes and configuration options, see the [Kubernetes ResourceQuota documentation](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-scopes).
+
 <a name="use-select"/>
 
 ### Select namespaces based on their hierarchies

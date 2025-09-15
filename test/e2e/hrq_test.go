@@ -29,7 +29,7 @@ const (
 )
 
 // HRQ tests are pending (disabled) until we turn them on in all the default manifests
-var _ = PDescribe("Hierarchical Resource Quota", func() {
+var _ = PDescribe("Hierarchical Resource Quota", Serial, func() {
 	BeforeEach(func() {
 		rand.Seed(time.Now().UnixNano())
 		CleanupTestNamespaces()
@@ -320,6 +320,47 @@ var _ = PDescribe("Hierarchical Resource Quota", func() {
 		RunShouldContainMultiple([]string{"b-hrq", "persistentvolumeclaims: 1/3"}, propogationTimeout, "kubectl hns hrq", "b-hrq", "-n", nsB)
 		RunShouldContainMultiple([]string{"a-hrq", "a-hrq-another"}, propogationTimeout, "kubectl hns hrq", "-n", nsA)
 		RunShouldContainMultiple([]string{"a-hrq", "a-hrq-another", "a-hrq"}, propogationTimeout, "kubectl hns hrq", "--all-namespaces")
+	})
+})
+
+var _ = Describe("HRQ Printer Columns Test", Serial, func() {
+	BeforeEach(func() {
+		rand.Seed(time.Now().UnixNano())
+		CleanupTestNamespaces()
+	})
+
+	AfterEach(func() {
+		CleanupTestNamespaces()
+	})
+
+	It("should show HRQ resource usage and limits in kubectl get hrq columns", func() {
+		// set up namespaces
+		CreateNamespace(nsA)
+		CreateSubnamespace(nsB, nsA)
+
+		// Set up HRQs with specific limits
+		setHRQ("printer-test-hrq", nsA, "memory", "200Mi", "cpu", "300m")
+
+		// Create resources that will show up in usage
+		createPod("printer-test-pod", nsB, "memory 100Mi cpu 150m", "memory 50Mi cpu 75m")
+
+		// Wait for resource usage to be recorded
+		FieldShouldContain("hrq", nsA, "printer-test-hrq", ".status.used", "memory:50Mi")
+		FieldShouldContain("hrq", nsA, "printer-test-hrq", ".status.used", "cpu:75m")
+
+		// Now verify that kubectl get hrq shows the columns with correct values
+		RunShouldContain("printer-test-hrq", propagationTime, "kubectl get hrq -n", nsA)
+		RunShouldContain("memory", propagationTime, "kubectl get hrq -n", nsA)
+		RunShouldContain("cpu", propagationTime, "kubectl get hrq -n", nsA)
+
+		// Verify the column headers are present
+		rawOutput, err := RunCommand("kubectl get hrq -n", nsA)
+		Expect(err).Should(BeNil())
+		// The default output should include our printer columns
+		Expect(rawOutput).Should(ContainSubstring("NAME"))
+		Expect(rawOutput).Should(ContainSubstring("REQUEST"))
+		Expect(rawOutput).Should(ContainSubstring("LIMIT"))
+		Expect(rawOutput).Should(ContainSubstring("AGE"))
 	})
 })
 

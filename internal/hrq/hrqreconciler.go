@@ -1,8 +1,11 @@
 package hrq
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -14,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	v1 "k8s.io/api/core/v1"
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
 	"sigs.k8s.io/hierarchical-namespaces/internal/forest"
 	"sigs.k8s.io/hierarchical-namespaces/internal/hrq/utils"
@@ -65,6 +69,8 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
+	log.Info("Reconciling HRQ", "name", req.NamespacedName.Name, "namespace", req.NamespacedName.Namespace, "Hard", inst.Spec.Hard, "scopeSelector", inst.Spec.ScopeSelector)
+
 	// If an object is deleted, assign the name and namespace of the request to
 	// the object so that they can be used to sync with the forest.
 	if isDeleted(inst) {
@@ -74,7 +80,7 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 	oldUsages := inst.Status.Used
 
 	// Sync with forest to update the HRQ or the in-memory forest.
-	updatedInst, updatedForest, err := r.syncWithForest(inst)
+	updatedInst, updatedForest, err := r.syncWithForest(log, inst)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -90,7 +96,11 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 
 	rqName := api.ResourceQuotaSingletonName
 	if r.Forest.IsMarkedAsScopedHRQ(req.NamespacedName) {
-		rqName = utils.ScopedRQName(inst.GetName())
+		rqName, err = utils.ScopedRQName(inst.GetNamespace(), inst.GetName())
+		if err != nil {
+			log.Error(err, "Couldn't get the scoped RQ name")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Enqueue ResourceQuota objects in the current namespace and its descendants
@@ -109,7 +119,9 @@ func (r *HierarchicalResourceQuotaReconciler) Reconcile(ctx context.Context, req
 // syncWithForest syncs resource limits and resource usages with the in-memory
 // forest. The first return value is true if the HRQ object is updated; the
 // second return value is true if the forest is updated.
-func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.HierarchicalResourceQuota) (bool, bool, error) {
+func (r *HierarchicalResourceQuotaReconciler) syncWithForest(log logr.Logger, inst *api.HierarchicalResourceQuota) (bool, bool, error) {
+	var err error
+
 	r.Forest.Lock()
 	defer r.Forest.Unlock()
 
@@ -118,10 +130,20 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	rqName := api.ResourceQuotaSingletonName
 	nn := types.NamespacedName{Name: inst.GetName(), Namespace: inst.GetNamespace()}
 	if isScopedHRQ {
+		log.Info("Marking HRQ as scoped", "name", inst.GetName(), "namespace", inst.GetNamespace())
 		r.Forest.MarkScopedRQ(nn)
-		rqName = utils.ScopedRQName(inst.GetName())
-	} else if !r.Forest.IsMarkedAsScopedHRQ(nn) {
-		rqName = api.ResourceQuotaSingletonName
+		rqName, err = utils.ScopedRQName(inst.GetNamespace(), inst.GetName())
+		if err != nil {
+			return false, false, err
+		}
+	} else if r.Forest.IsMarkedAsScopedHRQ(nn) {
+		log.Info("Detect the Scoped HRQ because of the mark")
+		rqName, err = utils.ScopedRQName(inst.GetNamespace(), inst.GetName())
+		if err != nil {
+			return false, false, err
+		}
+	} else {
+		log.Info("HRQ is a singleton")
 	}
 
 	updatedInst := false
@@ -139,7 +161,11 @@ func (r *HierarchicalResourceQuotaReconciler) syncWithForest(inst *api.Hierarchi
 	}
 
 	// Update HRQ usages if they are changed.
-	r.syncUsages(inst, rqName)
+	err = r.syncUsages(inst, rqName)
+	if err != nil {
+		return false, false, err
+	}
+
 	updatedInst = updatedInst || !utils.Equals(oldUsages, inst.Status.Used)
 
 	return updatedInst, updatedForest, nil
@@ -175,6 +201,33 @@ func (r *HierarchicalResourceQuotaReconciler) syncUsages(inst *api.HierarchicalR
 		return err
 	}
 	inst.Status.Used = utils.FilterUnlimited(usage, inst.Spec.Hard)
+
+	// Update status.request and status.limit to show HRQ status by using kubectl get
+	resources := make([]v1.ResourceName, 0, len(inst.Status.Hard))
+	for resource := range inst.Status.Hard {
+		resources = append(resources, resource)
+	}
+	sort.Sort(sortableResourceNames(resources))
+
+	requestColumn := bytes.NewBuffer([]byte{})
+	limitColumn := bytes.NewBuffer([]byte{})
+	for i := range resources {
+		resource := resources[i]
+
+		var w *bytes.Buffer
+		if pieces := strings.Split(resource.String(), "."); len(pieces) > 1 && pieces[0] == "limits" {
+			w = limitColumn
+		} else {
+			w = requestColumn
+		}
+
+		usedQuantity := inst.Status.Used[resource]
+		hardQuantity := inst.Status.Hard[resource]
+		fmt.Fprintf(w, "%s: %s/%s, ", resource, usedQuantity.String(), hardQuantity.String())
+	}
+
+	inst.Status.RequestsSummary = strings.TrimSuffix(requestColumn.String(), ", ")
+	inst.Status.LimitsSummary = strings.TrimSuffix(limitColumn.String(), ", ")
 
 	return nil
 }
@@ -234,6 +287,21 @@ func (r *HierarchicalResourceQuotaReconciler) SetupWithManager(mgr ctrl.Manager)
 	r.trigger = make(chan event.GenericEvent)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&api.HierarchicalResourceQuota{}).
-		Watches(&source.Channel{Source: r.trigger}, &handler.EnqueueRequestForObject{}).
+		WatchesRawSource(source.Channel(r.trigger, &handler.EnqueueRequestForObject{})).
 		Complete(r)
+}
+
+// sortableResourceNames - An array of sortable resource names
+type sortableResourceNames []v1.ResourceName
+
+func (list sortableResourceNames) Len() int {
+	return len(list)
+}
+
+func (list sortableResourceNames) Swap(i, j int) {
+	list[i], list[j] = list[j], list[i]
+}
+
+func (list sortableResourceNames) Less(i, j int) bool {
+	return list[i] < list[j]
 }
