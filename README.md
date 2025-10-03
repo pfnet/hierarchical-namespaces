@@ -26,7 +26,7 @@ Lead developer: @adrianludwin (aludwin@google.com)
 
 To install HNC on your cluster, and the `kubectl-hns` plugin on your
 workstation, follow the instructions on our [release
-pages](https://github.com/kubernetes-sigs/hierarchical-namespaces/releases/).
+pages](https://github.com/pfnet/hierarchical-namespaces/releases/).
 Note that versions of HNC prior to HNC v0.9 are available from our [old
 repo](https://github.com/kubernetes-sigs/multi-tenancy/releases/).
 
