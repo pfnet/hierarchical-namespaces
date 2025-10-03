@@ -38,11 +38,7 @@ endif
 #
 # Note that if you're using Kind, this image will never actually be pushed to
 # the registry.
-ifdef HNC_REGISTRY
-	HNC_IMG = ${HNC_REGISTRY}/${HNC_IMG_NAME}:${HNC_IMG_TAG}
-else
-	HNC_IMG = ${HNC_IMG_NAME}:${HNC_IMG_TAG}
-endif
+HNC_IMG = ${HNC_IMG_NAME}:${HNC_IMG_TAG}
 
 # Determine the OS Name, linux/darwin
 OS_NAME := $(shell go env GOOS)
@@ -351,8 +347,6 @@ endif
 	@echo "************************************************************"
 	@echo
 	@sleep 3
-
-###################### RELEASE ACTIONS #########################
 
 # Generate the Krew manifest and put it in manifests/. Note that 'manifests' must exist because
 # krew-build calls krew-tar calls build calls manifests.
