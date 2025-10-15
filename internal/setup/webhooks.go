@@ -76,6 +76,8 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	}
 
 	// Create webhooks for managed objects
+	// Note: We cannot use WebhookManagedBy here because objects validator handles all resource types dynamically (*)
+	// and WebhookManagedBy requires a specific type to be specified with For().
 	{
 		handler := &objects.Validator{
 			Log:    ctrl.Log.WithName("objects").WithName("validate"),
