@@ -60,7 +60,7 @@ func (c *hrqCollector) Collect(ch chan<- prometheus.Metric) {
 			"used": hrq.Status.Used,
 		} {
 			for res, qty := range resList {
-				v, ok := qty.AsInt64()
+				v := qty.AsApproximateFloat64() 
 				if !ok {
 					c.logger.Info("Failed to get the quantity value", "namespace", hrq.Namespace, "hrq", hrq.Name, "resource", res)
 					continue
