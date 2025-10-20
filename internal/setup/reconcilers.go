@@ -109,6 +109,10 @@ func CreateReconcilers(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 		if opts.HRQSyncInterval != 0 {
 			go watchHRQDrift(f, opts.HRQSyncInterval, hrqr)
 		}
+
+		if err := hrq.RegisterMetrics(mgr); err != nil {
+			return fmt.Errorf("cannot register HRQ metrics: %w", err)
+		}
 	}
 
 	if err := ar.SetupWithManager(mgr); err != nil {
