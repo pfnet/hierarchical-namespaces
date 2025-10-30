@@ -8,7 +8,10 @@ import (
 
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -35,9 +38,15 @@ const (
 // +<removewhenready>kubebuilder:webhook:admissionReviewVersions=v1;v1beta1,path=/validate-hnc-x-k8s-io-v1alpha2-hrq,mutating=false,failurePolicy=fail,groups="hnc.x-k8s.io",resources=hierarchicalresourcequotas,sideEffects=None,verbs=create;update,versions=v1alpha2,name=hrq.hnc.x-k8s.io
 
 type HRQ struct {
-	server  serverClient
-	Log     logr.Logger
-	decoder admission.Decoder
+	server serverClient
+	Log    logr.Logger
+}
+
+func NewHRQ(c client.Client) *HRQ {
+	return &HRQ{
+		server: &realClient{client: client.NewDryRunClient(c)},
+		Log:    ctrl.Log.WithName("validators").WithName("HierarchicalResourceQuota"),
+	}
 }
 
 // serverClient represents the checks that should typically be performed against
@@ -47,28 +56,59 @@ type serverClient interface {
 	validate(ctx context.Context, inst *v1.ResourceQuota) error
 }
 
-func (v *HRQ) Handle(ctx context.Context, req admission.Request) admission.Response {
+func (v *HRQ) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, apierrors.NewInternalError(err)
+	}
+
 	log := logutils.WithRID(v.Log).WithValues("nm", req.Name, "nnm", req.Namespace)
 
-	inst := &api.HierarchicalResourceQuota{}
-	if err := v.decoder.Decode(req, inst); err != nil {
-		log.Error(err, "Couldn't decode request")
-		return deny(metav1.StatusReasonBadRequest, err.Error())
+	inst, ok := obj.(*api.HierarchicalResourceQuota)
+	if !ok {
+		return nil, apierrors.NewInternalError(fmt.Errorf("expected a HierarchicalResourceQuota but got a %T", obj))
 	}
 
-	resp := v.handle(ctx, log, inst)
-	if resp.Allowed {
-		log.V(1).Info("Allowed", "message", resp.Result.Message)
-	} else {
-		log.Info("Denied", "code", resp.Result.Code, "reason", resp.Result.Reason, "message", resp.Result.Message)
+	if err := v.validate(ctx, log, inst); err != nil {
+		log.Info("Denied", "reason", err)
+		return nil, err
 	}
-	return resp
+
+	log.V(1).Info("Allowed")
+	return nil, nil
+}
+
+func (v *HRQ) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, apierrors.NewInternalError(err)
+	}
+
+	log := logutils.WithRID(v.Log).WithValues("nm", req.Name, "nnm", req.Namespace)
+
+	inst, ok := newObj.(*api.HierarchicalResourceQuota)
+	if !ok {
+		return nil, apierrors.NewInternalError(fmt.Errorf("expected a HierarchicalResourceQuota but got a %T", newObj))
+	}
+
+	if err := v.validate(ctx, log, inst); err != nil {
+		log.Info("Denied", "reason", err)
+		return nil, err
+	}
+
+	log.V(1).Info("Allowed")
+	return nil, nil
+}
+
+func (v *HRQ) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	// HierarchicalResourceQuota deletion doesn't need validation for our purposes
+	return nil, nil
 }
 
 // Validate if the resources in the spec are valid resource types for quota. We
 // will dry-run writing the HRQ resources to an RQ to see if we get an error
 // from the apiserver or not. If yes, we will deny the HRQ request.
-func (v *HRQ) handle(ctx context.Context, log logr.Logger, inst *api.HierarchicalResourceQuota) admission.Response {
+func (v *HRQ) validate(ctx context.Context, log logr.Logger, inst *api.HierarchicalResourceQuota) error {
 	rq := &v1.ResourceQuota{}
 	rq.Namespace = inst.Namespace
 	rq.Name = createRQName()
@@ -76,10 +116,11 @@ func (v *HRQ) handle(ctx context.Context, log logr.Logger, inst *api.Hierarchica
 	rq.Spec.ScopeSelector = inst.Spec.ScopeSelector
 	log.V(1).Info("Validating resource types in the HRQ spec by writing them to a resource quota on apiserver", "limits", inst.Spec.Hard)
 	if err := v.server.validate(ctx, rq); err != nil {
-		return denyInvalidField(fieldInfo, ignoreRQErr(err.Error()))
+		return apierrors.NewInvalid(api.GroupVersion.WithKind("HierarchicalResourceQuota").GroupKind(), inst.Name,
+			field.ErrorList{field.Invalid(field.NewPath("spec").Child("hard"), inst.Spec.Hard, ignoreRQErr(err.Error()))})
 	}
 
-	return allow("")
+	return nil
 }
 
 func createRQName() string {
@@ -114,16 +155,5 @@ func (c *realClient) validate(ctx context.Context, inst *v1.ResourceQuota) error
 	if err := c.client.Update(ctx, inst); err != nil {
 		return err
 	}
-	return nil
-}
-
-func (v *HRQ) InjectClient(c client.Client) error {
-	// Create a dry-run client.
-	v.server = &realClient{client: client.NewDryRunClient(c)}
-	return nil
-}
-
-func (r *HRQ) InjectDecoder(d admission.Decoder) error {
-	r.decoder = d
 	return nil
 }

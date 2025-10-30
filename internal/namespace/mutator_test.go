@@ -40,7 +40,7 @@ func TestMutateNamespaceIncludedLabel(t *testing.T) {
 			}
 
 			// Test
-			m.handle(l, nsInst)
+			m.mutateNamespace(l, nsInst)
 
 			// Report
 			g.Expect(nsInst.Labels[api.LabelIncludedNamespace]).Should(Equal(tc.expectlval))

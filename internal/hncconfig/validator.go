@@ -8,9 +8,11 @@ import (
 
 	"github.com/go-logr/logr"
 	k8sadm "k8s.io/api/admission/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	api "sigs.k8s.io/hierarchical-namespaces/api/v1alpha2"
@@ -32,56 +34,78 @@ const (
 // +kubebuilder:webhook:admissionReviewVersions=v1,path=/validate-hnc-x-k8s-io-v1alpha2-hncconfigurations,mutating=false,failurePolicy=fail,groups="hnc.x-k8s.io",resources=hncconfigurations,sideEffects=None,verbs=create;update;delete,versions=v1alpha2,name=hncconfigurations.hnc.x-k8s.io
 
 type Validator struct {
-	Log     logr.Logger
-	Forest  *forest.Forest
-	mapper  resourceMapper
-	decoder admission.Decoder
+	Log    logr.Logger
+	Forest *forest.Forest
+	mapper resourceMapper
 }
 
 type gvkSet map[schema.GroupVersionKind]api.SynchronizationMode
 
-func (v *Validator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := v.Log.WithValues("nm", req.Name, "op", req.Operation, "user", req.UserInfo.Username)
-	if webhooks.IsHNCServiceAccount(&req.AdmissionRequest.UserInfo) {
-		return webhooks.Allow("HNC SA")
+func NewValidator(forest *forest.Forest) *Validator {
+	return &Validator{
+		Log:    ctrl.Log.WithName("hncconfig").WithName("validate"),
+		Forest: forest,
+	}
+}
+
+func (v *Validator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	return v.handle(ctx, obj, k8sadm.Create)
+}
+
+func (v *Validator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	return v.handle(ctx, newObj, k8sadm.Update)
+}
+
+func (v *Validator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	return v.handle(ctx, obj, k8sadm.Delete)
+}
+
+func (v *Validator) handle(ctx context.Context, obj runtime.Object, operation k8sadm.Operation) (admission.Warnings, error) {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, apierrors.NewInternalError(err)
 	}
 
-	if req.Operation == k8sadm.Delete {
+	log := v.Log.WithValues("nm", req.Name, "op", operation, "user", req.UserInfo.Username)
+	if webhooks.IsHNCServiceAccount(&req.UserInfo) {
+		return nil, nil
+	}
+
+	if operation == k8sadm.Delete {
 		if req.Name == api.HNCConfigSingleton {
 			err := errors.New("deleting the 'config' object is forbidden")
-			return webhooks.DenyForbidden(api.HNCConfigurationGR, api.HNCConfigSingleton, err)
+			return nil, apierrors.NewForbidden(api.HNCConfigurationGR, api.HNCConfigSingleton, err)
 		} else {
-			// We allow deleting other objects. We should never enter this case with the CRD validation. We introduced
-			// the CRD validation in v0.6. Before that, it was protected by the validation controller. If users somehow
-			// bypassed the validation controller and created objects of other names, those objects would still have an
-			// obsolete condition and we will allow users to delete the objects.
-			return webhooks.Allow("")
+			return nil, nil
 		}
 	}
 
-	inst := &api.HNCConfiguration{}
-	if err := v.decoder.Decode(req, inst); err != nil {
-		log.Error(err, "Couldn't decode request")
-		return webhooks.DenyBadRequest(err)
+	inst, ok := obj.(*api.HNCConfiguration)
+	if !ok {
+		return nil, apierrors.NewInternalError(fmt.Errorf("expected a HNCConfiguration but got a %T", obj))
 	}
 
-	resp := v.handle(inst)
-	if !resp.Allowed {
-		log.Info("Denied", "code", resp.Result.Code, "reason", resp.Result.Reason, "message", resp.Result.Message)
-	} else {
-		log.V(1).Info("Allowed", "message", resp.Result.Message)
+	if err := v.validateInstance(inst); err != nil {
+		if !apierrors.IsInvalid(err) && !apierrors.IsConflict(err) && !apierrors.IsForbidden(err) {
+			log.Error(err, "Validation failed")
+		} else {
+			log.Info("Denied", "reason", err)
+		}
+		return nil, err
 	}
-	return resp
+
+	log.V(1).Info("Allowed")
+	return nil, nil
 }
 
-// handle implements the validation logic of this validator for Create and Update operations,
+// validateInstance implements the validation logic of this validator for Create and Update operations,
 // allowing it to be more easily unit tested (ie without constructing a full admission.Request).
-func (v *Validator) handle(inst *api.HNCConfiguration) admission.Response {
+func (v *Validator) validateInstance(inst *api.HNCConfiguration) error {
 	ts := gvkSet{}
 	// Convert all valid types from GR to GVK. If any type is invalid, e.g. not
 	// exist in the apiserver, wrong configuration, deny the request.
-	if rp := v.validateTypes(inst, ts); !rp.Allowed {
-		return rp
+	if err := v.validateTypes(inst, ts); err != nil {
+		return err
 	}
 
 	// Lastly, check if changing a type to "Propagate" mode would cause
@@ -89,7 +113,7 @@ func (v *Validator) handle(inst *api.HNCConfiguration) admission.Response {
 	return v.checkForest(ts)
 }
 
-func (v *Validator) validateTypes(inst *api.HNCConfiguration, ts gvkSet) admission.Response {
+func (v *Validator) validateTypes(inst *api.HNCConfiguration, ts gvkSet) error {
 	allErrs := field.ErrorList{}
 	for i, r := range inst.Spec.Resources {
 		gr := schema.GroupResource{Group: r.Group, Resource: r.Resource}
@@ -118,12 +142,12 @@ func (v *Validator) validateTypes(inst *api.HNCConfiguration, ts gvkSet) admissi
 		ts[gvk] = r.Mode
 	}
 	if len(allErrs) > 0 {
-		return webhooks.DenyInvalid(api.HNCConfigurationGK, api.HNCConfigSingleton, allErrs)
+		return apierrors.NewInvalid(api.HNCConfigurationGK, api.HNCConfigSingleton, allErrs)
 	}
-	return webhooks.Allow("")
+	return nil
 }
 
-func (v *Validator) checkForest(ts gvkSet) admission.Response {
+func (v *Validator) checkForest(ts gvkSet) error {
 	v.Forest.Lock()
 	defer v.Forest.Unlock()
 
@@ -139,11 +163,11 @@ func (v *Validator) checkForest(ts gvkSet) admission.Response {
 			msg += "\nTo fix this, please rename or remove the conflicting objects first."
 			err := errors.New(msg)
 			// TODO(erikgb): Invalid field error better?
-			return webhooks.DenyConflict(api.HNCConfigurationGR, api.Singleton, err)
+			return apierrors.NewConflict(api.HNCConfigurationGR, api.Singleton, err)
 		}
 	}
 
-	return webhooks.Allow("")
+	return nil
 }
 
 // checkConflictsForGVK looks for conflicts from top down for each tree.
@@ -224,16 +248,11 @@ func (a ancestorObjects) add(onm string, ns *forest.Namespace) {
 	a[onm] = append(a[onm], ns.Name())
 }
 
-func (v *Validator) InjectConfig(cf *rest.Config) error {
-	mapper, err := apimeta.NewGroupKindMapper(cf)
+func (v *Validator) SetupWithManager(mgr ctrl.Manager) error {
+	mapper, err := apimeta.NewGroupKindMapper(mgr.GetConfig())
 	if err != nil {
 		return err
 	}
 	v.mapper = mapper
-	return nil
-}
-
-func (v *Validator) InjectDecoder(d admission.Decoder) error {
-	v.decoder = d
 	return nil
 }

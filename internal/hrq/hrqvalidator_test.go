@@ -3,6 +3,7 @@ package hrq
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
@@ -42,9 +43,12 @@ func TestHRQSpec(t *testing.T) {
 			hrq := &api.HierarchicalResourceQuota{}
 			hrq.Spec.Hard = argsToResourceList(tc.hrqLimit...)
 			v := HRQ{server: fakeServer("")}
-			got := v.handle(context.Background(), l, hrq)
-			if got.AdmissionResponse.Allowed == tc.fail || got.Result.Message != tc.msg {
-				t.Errorf("unexpected admission response. Expected: %t, %s; Got: %t, %s", !tc.fail, tc.msg, got.AdmissionResponse.Allowed, got.Result.Message)
+			err := v.validate(context.Background(), l, hrq)
+			if (err != nil) != tc.fail {
+				t.Errorf("unexpected validation result: got error=%v, expected failure=%v", err, tc.fail)
+			}
+			if err != nil && tc.msg != "" && !strings.Contains(err.Error(), tc.msg) {
+				t.Errorf("unexpected error message. Expected to contain: %s; Got: %s", tc.msg, err.Error())
 			}
 		})
 	}
