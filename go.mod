@@ -1,6 +1,6 @@
 module sigs.k8s.io/hierarchical-namespaces
 
-go 1.25.0
+go 1.25.9
 
 require (
 	contrib.go.opencensus.io/exporter/prometheus v0.4.0
@@ -14,11 +14,11 @@ require (
 	github.com/spf13/cobra v1.10.0
 	go.opencensus.io v0.24.0
 	go.uber.org/zap v1.27.0
-	k8s.io/api v0.35.0
-	k8s.io/apiextensions-apiserver v0.35.0
-	k8s.io/apimachinery v0.35.0
-	k8s.io/cli-runtime v0.35.0
-	k8s.io/client-go v0.35.0
+	k8s.io/api v0.35.3
+	k8s.io/apiextensions-apiserver v0.35.3
+	k8s.io/apimachinery v0.35.3
+	k8s.io/cli-runtime v0.35.3
+	k8s.io/client-go v0.35.3
 	sigs.k8s.io/controller-runtime v0.23.0
 )
 
