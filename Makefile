@@ -52,7 +52,7 @@ GOBIN ?= ${CURDIR}/bin
 KUSTOMIZE_VERSION ?= v5.3.0
 KUSTOMIZE ?= ${GOBIN}/kustomize
 
-CONTROLLER_GEN_VERSION ?= v0.18.0
+CONTROLLER_GEN_VERSION ?= v0.20.0
 CONTROLLER_GEN ?= ${GOBIN}/controller-gen
 
 STATICCHECK_VERSION ?= 2023.1
@@ -61,8 +61,8 @@ STATICCHECK ?= ${GOBIN}/staticcheck
 # This really could be left blank, and setup-envtest would just download the
 # latest. But we may as well make it hermetic-ish by always downloading the
 # same version. I doubt the version matters much (or at all).
-ENVTEST_K8S_VERSION ?= 1.26.0
-SETUP_ENVTEST_VERSION ?= release-0.17
+ENVTEST_K8S_VERSION ?= 1.35.0
+SETUP_ENVTEST_VERSION ?= release-0.23
 SETUP_ENVTEST ?= ${GOBIN}/setup-envtest
 
 # Get check sum value of krew archive. Note that this value is only expanded

@@ -695,6 +695,9 @@ func (c fakeNSClient) Get(_ context.Context, key client.ObjectKey, obj client.Ob
 func (fakeNSClient) Create(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
 	return nil
 }
+func (fakeNSClient) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ ...client.ApplyOption) error {
+	return nil
+}
 func (fakeNSClient) Update(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
 	return nil
 }
