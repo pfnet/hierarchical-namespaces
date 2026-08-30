@@ -68,7 +68,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 
 	// Create webhook for Hierarchy
 	if err := builder.WebhookManagedBy(mgr, &api.HierarchyConfiguration{}).
-		WithCustomPath(hierarchyconfig.ServingPath).
+		WithValidatorCustomPath(hierarchyconfig.ServingPath).
 		WithCustomValidator(hierarchyconfig.NewValidator(f, mgr.GetClient())).
 		Complete(); err != nil {
 		return fmt.Errorf("failed to create webhook for hierarchyconfig: %w", err)
@@ -93,7 +93,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 		return fmt.Errorf("failed to setup hncconfig validator: %w", err)
 	}
 	if err := builder.WebhookManagedBy(mgr, &api.HNCConfiguration{}).
-		WithCustomPath(hncconfig.ServingPath).
+		WithValidatorCustomPath(hncconfig.ServingPath).
 		WithCustomValidator(hnconfigValidator).
 		Complete(); err != nil {
 		return fmt.Errorf("failed to create webhook for hncconfig: %w", err)
@@ -102,7 +102,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	// Create webhook for the subnamespace anchors.
 	anchorValidator := anchor.NewValidator(f)
 	if err := builder.WebhookManagedBy(mgr, &api.SubnamespaceAnchor{}).
-		WithCustomPath(anchor.ServingPath).
+		WithValidatorCustomPath(anchor.ServingPath).
 		WithCustomValidator(anchorValidator).
 		Complete(); err != nil {
 		return fmt.Errorf("failed to create webhook for anchor: %w", err)
@@ -111,7 +111,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	// Create webhook for the namespaces (core type).
 	nsValidator := ns.NewValidator(f)
 	if err := builder.WebhookManagedBy(mgr, &corev1.Namespace{}).
-		WithCustomPath(ns.ServingPath).
+		WithValidatorCustomPath(ns.ServingPath).
 		WithCustomValidator(nsValidator).
 		Complete(); err != nil {
 		return fmt.Errorf("failed to create webhook for namespace: %w", err)
@@ -120,7 +120,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 	// Create mutator for namespace `included-namespace` label.
 	nsMutator := ns.NewMutator()
 	if err := builder.WebhookManagedBy(mgr, &corev1.Namespace{}).
-		WithCustomPath(ns.MutatorServingPath).
+		WithDefaulterCustomPath(ns.MutatorServingPath).
 		WithCustomDefaulter(nsMutator).
 		Complete(); err != nil {
 		return fmt.Errorf("failed to create mutator webhook for namespace: %w", err)
@@ -130,7 +130,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 		// Create webhook for ResourceQuota status.
 		rqStatusValidator := hrq.NewResourceQuotaStatus(f, mgr.GetClient())
 		if err := builder.WebhookManagedBy(mgr, &corev1.ResourceQuota{}).
-			WithCustomPath(hrq.ResourceQuotasStatusServingPath).
+			WithValidatorCustomPath(hrq.ResourceQuotasStatusServingPath).
 			WithCustomValidator(rqStatusValidator).
 			Complete(); err != nil {
 			return fmt.Errorf("failed to create webhook for ResourceQuota status: %w", err)
@@ -139,7 +139,7 @@ func createWebhooks(mgr ctrl.Manager, f *forest.Forest, opts Options) error {
 		// Create webhook for HierarchicalResourceQuota spec.
 		hrqValidator := hrq.NewHRQ(mgr.GetClient())
 		if err := builder.WebhookManagedBy(mgr, &api.HierarchicalResourceQuota{}).
-			WithCustomPath(hrq.HRQServingPath).
+			WithValidatorCustomPath(hrq.HRQServingPath).
 			WithCustomValidator(hrqValidator).
 			Complete(); err != nil {
 			return fmt.Errorf("failed to create webhook for HierarchicalResourceQuota: %w", err)

@@ -52,7 +52,7 @@ GOBIN ?= ${CURDIR}/bin
 KUSTOMIZE_VERSION ?= v5.3.0
 KUSTOMIZE ?= ${GOBIN}/kustomize
 
-CONTROLLER_GEN_VERSION ?= v0.20.0
+CONTROLLER_GEN_VERSION ?= v0.21.0
 CONTROLLER_GEN ?= ${GOBIN}/controller-gen
 
 STATICCHECK_VERSION ?= 2023.1
@@ -61,8 +61,8 @@ STATICCHECK ?= ${GOBIN}/staticcheck
 # This really could be left blank, and setup-envtest would just download the
 # latest. But we may as well make it hermetic-ish by always downloading the
 # same version. I doubt the version matters much (or at all).
-ENVTEST_K8S_VERSION ?= 1.35.0
-SETUP_ENVTEST_VERSION ?= release-0.23
+ENVTEST_K8S_VERSION ?= 1.36.2
+SETUP_ENVTEST_VERSION ?= release-0.24
 SETUP_ENVTEST ?= ${GOBIN}/setup-envtest
 
 # Get check sum value of krew archive. Note that this value is only expanded
@@ -276,8 +276,8 @@ docker-push-multi: buildx-setup generate fmt vet staticcheck
 # Creates a local kind cluster, destroying the old one if necessary.
 kind-reboot:
 	@echo "Warning: the 'kind' command must be in your path for this to work"
-	-kind delete cluster
-	kind create cluster --name ${KIND}
+	-kind delete cluster --name ${KIND}
+	kind create cluster --name ${KIND} $(if ${KIND_NODE_IMAGE},--image ${KIND_NODE_IMAGE})
 
 # Creates a local kind cluster, destroying the old one if necessary. It's not
 # *necessary* to call this wih CONFIG=kind but it's not a bad idea either so
@@ -302,13 +302,13 @@ kind-deploy:
 # HNC_FOCUS=772 make test-e2e # only runs the test for issue 772
 # HNC_FOCUS=Quickstart make test-e2e # Runs all tests in the "Quickstart" Describe block
 .PHONY: test-e2e
-test-e2e: warn-hnc-repair
+test-e2e:
 	./hack/local-run-e2e.sh
 
 # This batch test will run e2e tests N times on the current cluster the user
 # deployed (either kind or a kubernetes cluster), e.g. "make test-e2e-batch N=10"
 .PHONY: test-e2e-batch
-test-e2e-batch: warn-hnc-repair
+test-e2e-batch:
 	number=1 ; while [[ $$number -le $N ]] ; do \
 		echo $$number ; \
     ((number = number + 1)) ; \
