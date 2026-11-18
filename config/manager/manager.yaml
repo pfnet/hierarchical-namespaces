@@ -23,8 +23,6 @@ spec:
     metadata:
       labels:
         control-plane: controller-manager
-      annotations:
-        prometheus.io/scrape: 'true'
     spec:
       securityContext:
         # Generally to run as non-root, the GID and UID can be any number
